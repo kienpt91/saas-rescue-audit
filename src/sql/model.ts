@@ -37,16 +37,27 @@ export interface PolicyInfo {
 }
 
 export interface SqlModel {
-  /** Keyed by `schema.name`, lower-case. Only tables created by the scanned migrations. */
+  /** Keyed by `schema.name`. Unquoted names are lower-cased, quoted names keep their case. Only tables created by the scanned migrations. */
   tables: Map<string, TableInfo>;
   policies: PolicyInfo[];
+}
+
+/** Model plus the index that keeps policy lookups constant-time while the migrations are applied. */
+interface Builder extends SqlModel {
+  index: Map<string, Map<string, PolicyInfo>>;
+}
+
+export interface BuildOptions {
+  /** Runs the work for one file; lets the caller isolate failures and time limits per file. */
+  guard?: (path: string, fn: () => void) => void;
+  warn?: (message: string) => void;
 }
 
 const CONSTRAINT_STARTS = new Set(["constraint", "primary", "foreign", "unique", "check", "like", "exclude"]);
 const COMMANDS = new Set(["all", "select", "insert", "update", "delete"]);
 
 export function tableKey(schema: string, name: string): string {
-  return `${schema}.${name}`.toLowerCase();
+  return `${schema}.${name}`;
 }
 
 interface Name {
@@ -61,7 +72,7 @@ function readName(tokens: Token[], at: number): Name | null {
   const sep = tokens[at + 1];
   const second = tokens[at + 2];
   if (sep && sep.text === "." && second && (second.kind === "word" || second.kind === "qident")) {
-    return { schema: first.kind === "word" ? first.value : first.value.toLowerCase(), name: second.value, next: at + 3 };
+    return { schema: first.value, name: second.value, next: at + 3 };
   }
   return { schema: null, name: first.value, next: at + 1 };
 }
@@ -206,23 +217,43 @@ function parsePolicyClauses(tokens: Token[], from: number): PolicyParts {
   return parts;
 }
 
-export function buildSqlModel(files: ReadonlyArray<{ path: string; text: string }>): SqlModel {
-  const model: SqlModel = { tables: new Map(), policies: [] };
+export function buildSqlModel(files: ReadonlyArray<{ path: string; text: string }>, options: BuildOptions = {}): SqlModel {
+  const model: Builder = { tables: new Map(), policies: [], index: new Map() };
   const ordered = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const guard = options.guard ?? ((_path: string, fn: () => void): void => fn());
   for (const file of ordered) {
-    for (const stmt of splitStatements(tokenize(file.text))) applyStatement(model, file.path, stmt);
+    guard(file.path, () => {
+      for (const stmt of splitStatements(tokenize(file.text))) {
+        applyStatement(model, file.path, stmt);
+        const hidden = stmt.find((t) => t.kind === "dollar" && DOLLAR_BODY_SQL.test(t.value));
+        if (hidden) options.warn?.(`${file.path}:${hidden.line}: a function or DO block mentions policies, row level security or EXECUTE; SQL inside dollar-quoted bodies is not analysed`);
+      }
+    });
   }
+  model.policies = [...model.index.values()].flatMap((byName) => [...byName.values()]);
   return model;
 }
 
-function applyStatement(model: SqlModel, file: string, s: Token[]): void {
+/** Statements inside dollar-quoted bodies that this model would otherwise have interpreted. */
+const DOLLAR_BODY_SQL = /\b(?:create\s+policy|alter\s+policy|drop\s+policy|alter\s+table|row\s+level\s+security|execute)\b/i;
+
+function policyIndex(model: Builder, table: string): Map<string, PolicyInfo> {
+  let byName = model.index.get(table);
+  if (!byName) {
+    byName = new Map();
+    model.index.set(table, byName);
+  }
+  return byName;
+}
+
+function applyStatement(model: Builder, file: string, s: Token[]): void {
   const verb = s[0]?.value;
   if (verb === "create") createStatement(model, file, s);
   else if (verb === "alter") alterStatement(model, file, s);
   else if (verb === "drop") dropStatement(model, s);
 }
 
-function createStatement(model: SqlModel, file: string, s: Token[]): void {
+function createStatement(model: Builder, file: string, s: Token[]): void {
   let i = 1;
   let temporary = false;
   while (s[i] && ["global", "local", "temporary", "temp", "unlogged"].includes(s[i]!.value)) {
@@ -232,13 +263,20 @@ function createStatement(model: SqlModel, file: string, s: Token[]): void {
   if (s[i]?.value === "table") {
     if (temporary) return;
     i++;
-    if (s[i]?.value === "if" && s[i + 1]?.value === "not" && s[i + 2]?.value === "exists") i += 3;
+    let ifNotExists = false;
+    if (s[i]?.value === "if" && s[i + 1]?.value === "not" && s[i + 2]?.value === "exists") {
+      ifNotExists = true;
+      i += 3;
+    }
     const name = readName(s, i);
     if (!name) return;
     const schema = name.schema ?? "public";
     if (schema !== "public") return;
+    const key = tableKey(schema, name.name);
+    // CREATE TABLE IF NOT EXISTS leaves an existing table, including its RLS state, alone
+    if (ifNotExists && model.tables.has(key)) return;
     const columns = s[name.next]?.text === "(" ? parseColumns(s, name.next) : [];
-    model.tables.set(tableKey(schema, name.name), { schema, name: name.name, file, line: s[0]!.line, columns, rlsEnabled: false });
+    model.tables.set(key, { schema, name: name.name, file, line: s[0]!.line, columns, rlsEnabled: false });
     return;
   }
   if (s[i]?.value === "policy") {
@@ -247,7 +285,7 @@ function createStatement(model: SqlModel, file: string, s: Token[]): void {
     const table = readName(s, i + 3);
     if (!table) return;
     const parts = parsePolicyClauses(s, table.next);
-    model.policies.push({
+    policyIndex(model, tableKey(table.schema ?? "public", table.name)).set(polName.value, {
       name: polName.value,
       table: tableKey(table.schema ?? "public", table.name),
       command: parts.command ?? "all",
@@ -261,15 +299,14 @@ function createStatement(model: SqlModel, file: string, s: Token[]): void {
   }
 }
 
-function alterStatement(model: SqlModel, file: string, s: Token[]): void {
-  void file;
+function alterStatement(model: Builder, _file: string, s: Token[]): void {
   if (s[1]?.value === "policy") {
     const polName = s[2];
     if (!polName || s[3]?.value !== "on") return;
     const table = readName(s, 4);
     if (!table) return;
     const key = tableKey(table.schema ?? "public", table.name);
-    const existing = model.policies.find((p) => p.table === key && p.name === polName.value);
+    const existing = model.index.get(key)?.get(polName.value);
     if (!existing) return;
     const parts = parsePolicyClauses(s, table.next);
     if (parts.roles && parts.roles.length > 0) existing.roles = parts.roles;
@@ -301,7 +338,7 @@ function alterStatement(model: SqlModel, file: string, s: Token[]): void {
   }
 }
 
-function dropStatement(model: SqlModel, s: Token[]): void {
+function dropStatement(model: Builder, s: Token[]): void {
   if (s[1]?.value === "table") {
     let i = 2;
     if (s[i]?.value === "if" && s[i + 1]?.value === "exists") i += 2;
@@ -310,7 +347,7 @@ function dropStatement(model: SqlModel, s: Token[]): void {
       if (!name) break;
       const key = tableKey(name.schema ?? "public", name.name);
       model.tables.delete(key);
-      model.policies = model.policies.filter((p) => p.table !== key);
+      model.index.delete(key);
       i = name.next;
       if (s[i]?.text === ",") i++;
       else break;
@@ -323,18 +360,119 @@ function dropStatement(model: SqlModel, s: Token[]): void {
     const table = readName(s, i + 2);
     if (!table) return;
     const key = tableKey(table.schema ?? "public", table.name);
-    model.policies = model.policies.filter((p) => !(p.table === key && p.name === polName.value));
+    model.index.get(key)?.delete(polName.value);
   }
 }
 
-/** True for `true`, `(true)` and `1 = 1`, which allow every row. */
+/** Outcome of folding a boolean expression made of constants. */
+export type Folded = "true" | "false" | "unknown" | "too-deep";
+
+const MAX_FOLD_DEPTH = 64;
+
+/** Index of the matching close parenthesis for every open one, or -1. One pass, no recursion. */
+function parenTable(tokens: readonly Token[]): Int32Array {
+  const close = new Int32Array(tokens.length).fill(-1);
+  const stack: number[] = [];
+  tokens.forEach((t, i) => {
+    if (t.kind !== "punct") return;
+    if (t.text === "(") stack.push(i);
+    else if (t.text === ")") {
+      const open = stack.pop();
+      if (open !== undefined) close[open] = i;
+    }
+  });
+  return close;
+}
+
+interface Literal {
+  kind: "number" | "string" | "boolean";
+  value: string | number | boolean;
+}
+
+function literalOf(tokens: readonly Token[], lo: number, hi: number): Literal | null {
+  let end = hi;
+  // x::type casts do not change a constant
+  if (end - lo >= 3 && tokens[end - 2]!.text === "::" && tokens[end - 1]!.kind === "word") end -= 2;
+  if (end - lo !== 1) return null;
+  const t = tokens[lo]!;
+  if (t.kind === "number") {
+    const n = Number(t.value);
+    return Number.isNaN(n) ? null : { kind: "number", value: n };
+  }
+  if (t.kind === "string") return { kind: "string", value: t.value };
+  if (t.kind === "word" && (t.value === "true" || t.value === "false")) return { kind: "boolean", value: t.value === "true" };
+  return null;
+}
+
+/**
+ * Folds an expression that consists only of constants, parentheses, NOT, AND, OR and comparisons
+ * between literals. Anything else (a column, a function call) makes that part `unknown`, but OR with
+ * a true operand and AND with a false operand are still decided, so `true or user_id = auth.uid()`
+ * is "true". Works on token ranges, so deep nesting costs time linear in the input, and reports
+ * "too-deep" instead of guessing once logical grouping goes beyond 64 levels.
+ */
+export function foldConstant(expr: readonly Token[]): Folded {
+  const close = parenTable(expr);
+  const fold = (lo: number, hiIn: number, depth: number): Folded => {
+    if (depth > MAX_FOLD_DEPTH) return "too-deep";
+    let hi = hiIn;
+    // peel redundant outer parentheses iteratively
+    while (hi - lo >= 2 && expr[lo]!.text === "(" && close[lo] === hi - 1) {
+      lo += 1;
+      hi -= 1;
+    }
+    if (hi <= lo) return "unknown";
+    const split = (word: string): number[] => {
+      const at: number[] = [];
+      for (let i = lo; i < hi; i++) {
+        const t = expr[i]!;
+        if (t.text === "(" && close[i] !== -1) i = close[i]!;
+        else if (t.kind === "word" && t.value === word) at.push(i);
+      }
+      return at;
+    };
+    const combine = (word: "or" | "and"): Folded | null => {
+      const at = split(word);
+      if (at.length === 0) return null;
+      const bounds = [lo - 1, ...at, hi];
+      let unknown = false;
+      for (let k = 0; k < bounds.length - 1; k++) {
+        const part = fold(bounds[k]! + 1, bounds[k + 1]!, depth + 1);
+        if (part === "too-deep") return "too-deep";
+        if (word === "or" && part === "true") return "true";
+        if (word === "and" && part === "false") return "false";
+        if (part === "unknown") unknown = true;
+      }
+      if (unknown) return "unknown";
+      return word === "or" ? "false" : "true";
+    };
+    const ored = combine("or");
+    if (ored !== null) return ored;
+    const anded = combine("and");
+    if (anded !== null) return anded;
+    if (expr[lo]!.kind === "word" && expr[lo]!.value === "not") {
+      const inner = fold(lo + 1, hi, depth + 1);
+      return inner === "true" ? "false" : inner === "false" ? "true" : inner;
+    }
+    const lit = literalOf(expr, lo, hi);
+    if (lit && lit.kind === "boolean") return lit.value ? "true" : "false";
+    // literal = literal, literal <> literal
+    for (let i = lo + 1; i < hi; i++) {
+      const op = expr[i]!;
+      if (op.kind !== "op" || !["=", "<>", "!="].includes(op.text)) continue;
+      const a = literalOf(expr, lo, i);
+      const b = literalOf(expr, i + 1, hi);
+      if (!a || !b || a.kind !== b.kind) return "unknown";
+      return (a.value === b.value) === (op.text === "=") ? "true" : "false";
+    }
+    return "unknown";
+  };
+  return fold(0, expr.length, 0);
+}
+
+/** True when the expression is constant true (`true`, `1 = 1`, `true or x`, `not false`, ...) and allows every row. */
 export function isConstantTrue(expr: Token[] | null): boolean {
-  if (!expr) return false;
-  let t = expr;
-  while (t.length >= 2 && t[0]!.text === "(" && matchParen(t, 0) === t.length - 1) t = t.slice(1, -1);
-  if (t.length === 1 && t[0]!.value === "true") return true;
-  if (t.length === 3 && t[0]!.kind === "number" && t[1]!.text === "=" && t[2]!.kind === "number" && t[0]!.value === t[2]!.value) return true;
-  return false;
+  return expr !== null && foldConstant(expr) === "true";
 }
 
 /** True when the expression mentions the identifier (case-insensitive), qualified or not. */
@@ -342,4 +480,43 @@ export function referencesColumn(expr: Token[] | null, column: string): boolean 
   if (!expr) return false;
   const wanted = column.toLowerCase();
   return expr.some((t) => (t.kind === "word" || t.kind === "qident") && t.value.toLowerCase() === wanted);
+}
+
+const CALLER_IDENTITY = new Set(["uid", "jwt"]);
+const NOT_A_FUNCTION = new Set(["in", "any", "all", "exists", "and", "or", "not", "select", "values", "array", "from", "where", "then", "else", "when", "case", "is", "like"]);
+
+/**
+ * True when the expression ties `column` to the caller: it mentions the column together with the
+ * caller's identity (auth.uid(), auth.jwt(), current_setting(), current_user), or passes the column
+ * to a function (a membership helper such as is_member(org_id)). Merely mentioning the column, as in
+ * `user_id is not null`, does not scope anything.
+ */
+export function scopesToCaller(expr: Token[] | null, column: string): boolean {
+  if (!expr || foldConstant(expr) === "true") return false;
+  const wanted = column.toLowerCase();
+  const mention: number[] = [];
+  let identity = false;
+  expr.forEach((t, i) => {
+    if ((t.kind === "word" || t.kind === "qident") && t.value.toLowerCase() === wanted) mention.push(i);
+    if (t.kind === "word" && t.value === "auth" && expr[i + 1]?.text === "." && CALLER_IDENTITY.has(expr[i + 2]?.value ?? "")) identity = true;
+    if (t.kind === "word" && (t.value === "current_setting" || t.value === "current_user" || t.value === "session_user")) identity = true;
+  });
+  if (mention.length === 0) return false;
+  if (identity) return true;
+  // column passed as an argument: name ( ... column ... ) where name is a function
+  return mention.some((at) => {
+    let depth = 0;
+    for (let i = at - 1; i >= 0; i--) {
+      const t = expr[i]!;
+      if (t.text === ")") depth++;
+      else if (t.text === "(") {
+        if (depth === 0) {
+          const before = expr[i - 1];
+          return before !== undefined && (before.kind === "word" || before.kind === "qident") && !NOT_A_FUNCTION.has(before.value);
+        }
+        depth--;
+      }
+    }
+    return false;
+  });
 }

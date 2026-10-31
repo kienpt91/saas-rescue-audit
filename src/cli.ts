@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { audit } from "./audit.js";
 import { RULES } from "./catalog.js";
 import { CONFIG_FILE, ConfigError, DEFAULT_CONFIG, MAX_CONFIG_BYTES, parseConfig } from "./config.js";
-import { collectProject } from "./project.js";
+import { collectProject, readRegularFile } from "./project.js";
 import { filterMinSeverity, projectName } from "./report/common.js";
 import { renderHuman } from "./report/human.js";
 import { renderJson } from "./report/json.js";
 import { renderMarkdown } from "./report/markdown.js";
+import { terminalText } from "./report/text.js";
 import { SEVERITIES, SEVERITY_RANK, type Config, type Severity } from "./types.js";
 import { TOOL_VERSION } from "./version.js";
 
@@ -33,12 +34,15 @@ Options:
   --min-severity <level>  hide findings below critical|high|medium|low|info
   --fail-on <level|none>  exit 1 when a finding at or above this level exists (default: low)
   --date <YYYY-MM-DD>     print a date in the Markdown header (omitted by default)
+  --allow-incomplete      do not use exit code 3 when files were skipped or could not be analysed
   --no-color              disable colors
   --list-rules            list the rules and exit
   -h, --help              show this help
   -v, --version           show the version
 
-Exit codes: 0 no findings at the fail-on level, 1 findings, 2 usage or input error.
+Exit codes: 0 nothing at the fail-on level and the audit is complete, 1 findings,
+2 usage or input error, 3 the audit is incomplete (files skipped by a size, count,
+nesting or time limit, or unreadable) and there are no findings to report.
 `;
 
 interface Args {
@@ -51,6 +55,7 @@ interface Args {
   failOn: Severity | "none";
   date: string | null;
   color: boolean | null;
+  allowIncomplete: boolean;
   listRules: boolean;
   help: boolean;
   version: boolean;
@@ -65,7 +70,7 @@ function isSeverity(value: string): value is Severity {
 }
 
 function parseArgs(argv: readonly string[]): Args {
-  const args: Args = { dir: ".", json: false, markdown: false, output: null, config: null, minSeverity: null, failOn: "low", date: null, color: null, listRules: false, help: false, version: false };
+  const args: Args = { dir: ".", json: false, markdown: false, output: null, config: null, minSeverity: null, failOn: "low", date: null, color: null, allowIncomplete: false, listRules: false, help: false, version: false };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -107,6 +112,9 @@ function parseArgs(argv: readonly string[]): Args {
         args.date = v;
         break;
       }
+      case "--allow-incomplete":
+        args.allowIncomplete = true;
+        break;
       case "--no-color":
         args.color = false;
         break;
@@ -132,23 +140,43 @@ function parseArgs(argv: readonly string[]): Args {
   return args;
 }
 
-function loadConfig(dir: string, explicit: string | null, cwd: string): Config {
+/**
+ * Reads the config file. The one found in the audited directory comes from the repository under audit,
+ * so it is opened without following symlinks and only as a regular file of bounded size; a path given
+ * with --config is the user's own choice and may be a symlink.
+ */
+function loadConfig(dir: string, explicit: string | null, cwd: string): { config: Config; source: string | null } {
   const path = explicit ? resolve(cwd, explicit) : resolve(dir, CONFIG_FILE);
-  if (!existsSync(path)) {
-    if (explicit) throw new UsageError(`config file not found: ${explicit}`);
-    return DEFAULT_CONFIG;
+  const result = readRegularFile(path, MAX_CONFIG_BYTES, { followSymlinks: explicit !== null });
+  if ("skip" in result) {
+    if (result.skip.includes("ENOENT")) {
+      if (explicit) throw new UsageError(`config file not found: ${explicit}`);
+      return { config: DEFAULT_CONFIG, source: null };
+    }
+    throw new ConfigError(`${explicit ?? CONFIG_FILE}: ${result.skip}`);
   }
-  if (statSync(path).size > MAX_CONFIG_BYTES) throw new ConfigError(`${path}: larger than ${MAX_CONFIG_BYTES} bytes`);
-  return parseConfig(readFileSync(path, "utf8"), explicit ?? CONFIG_FILE);
+  return { config: parseConfig(result.text, explicit ?? CONFIG_FILE), source: explicit ?? CONFIG_FILE };
 }
 
-/** Entry point with injectable I/O. Returns the process exit code. */
+/**
+ * Entry point with injectable I/O. Returns the process exit code. Anything unexpected is reported as
+ * an internal error (exit code 2) instead of a stack trace, which could quote text from the repository.
+ */
 export function run(argv: readonly string[], io: Io): number {
+  try {
+    return execute(argv, io);
+  } catch (error) {
+    io.stderr(`saas-audit: internal error: ${terminalText(error instanceof Error ? `${error.name}: ${error.message}` : "unknown error")}\n`);
+    return 2;
+  }
+}
+
+function execute(argv: readonly string[], io: Io): number {
   let args: Args;
   try {
     args = parseArgs(argv);
   } catch (e) {
-    io.stderr(`${(e as Error).message}\n\n${USAGE}`);
+    io.stderr(`${terminalText(e instanceof Error ? e.message : "invalid arguments")}\n\n${USAGE}`);
     return 2;
   }
   if (args.help) {
@@ -166,23 +194,24 @@ export function run(argv: readonly string[], io: Io): number {
 
   const dir = resolve(io.cwd, args.dir);
   if (!existsSync(dir) || !statSync(dir).isDirectory()) {
-    io.stderr(`not a directory: ${args.dir}\n`);
+    io.stderr(`not a directory: ${terminalText(args.dir)}\n`);
     return 2;
   }
 
   let config: Config;
+  let configSource: string | null;
   try {
-    config = loadConfig(dir, args.config, io.cwd);
+    ({ config, source: configSource } = loadConfig(dir, args.config, io.cwd));
   } catch (e) {
     if (e instanceof ConfigError || e instanceof UsageError) {
-      io.stderr(`${e.message}\n`);
+      io.stderr(`${terminalText(e.message)}\n`);
       return 2;
     }
     throw e;
   }
 
   const project = collectProject(dir, config);
-  const full = audit(project, config);
+  const full = audit(project, config, { configSource });
   const shown = args.minSeverity ? { ...full, findings: filterMinSeverity(full.findings, args.minSeverity) } : full;
   const name = projectName(project);
 
@@ -193,12 +222,18 @@ export function run(argv: readonly string[], io: Io): number {
 
   if (args.output) {
     writeFileSync(resolve(io.cwd, args.output), text);
-    io.stderr(`wrote ${args.output}\n`);
+    io.stderr(`wrote ${terminalText(args.output)}\n`);
   } else io.stdout(text);
 
-  if (args.failOn === "none") return 0;
-  const threshold = SEVERITY_RANK[args.failOn];
-  return shown.findings.some((f) => SEVERITY_RANK[f.severity] >= threshold) ? 1 : 0;
+  if (args.failOn !== "none") {
+    const threshold = SEVERITY_RANK[args.failOn];
+    if (shown.findings.some((f) => SEVERITY_RANK[f.severity] >= threshold)) return 1;
+  }
+  if (full.skipped.length > 0 && !args.allowIncomplete) {
+    io.stderr(`audit incomplete: ${full.skipped.length} item${full.skipped.length === 1 ? " was" : "s were"} not analysed (exit code 3, see "Not analysed" in the report)\n`);
+    return 3;
+  }
+  return 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

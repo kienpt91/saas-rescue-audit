@@ -1,9 +1,11 @@
 import ts from "typescript";
 import { GitIgnore } from "../gitignore.js";
 import { isEnvFile } from "../project.js";
+import { KEY_SHAPES, redact } from "../redact.js";
+import { shellQuote } from "../shell.js";
 import { lineOf, lineText, type SourceInfo } from "../ts/source.js";
 import type { RawFinding, Severity } from "../types.js";
-import { textLine, type Rule } from "./context.js";
+import { textLine, type AuditContext, type Rule } from "./context.js";
 
 /** Names whose value must never reach a browser. */
 const SECRET_NAME = /(?:SERVICE_ROLE|SECRET|PRIVATE|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|DATABASE_URL|DB_URL|CONNECTION_STRING|WEBHOOK)/i;
@@ -12,29 +14,6 @@ const PUBLIC_LEAK_NAME = /^NEXT_PUBLIC_.*(?:SERVICE_ROLE|SECRET|PRIVATE|PASSWORD
 const BINDING_SECRET_NAME = /(?:secret|token|passw(?:or)?d|api[_-]?key|private[_-]?key|auth[_-]?key|credential)/i;
 const TEMPLATE_ENV = /^\.env(?:\.[A-Za-z0-9_-]+)*\.(?:example|sample|template|dist|defaults)$/;
 const PLACEHOLDER = /(?:^$|^<|^\[|^\$\{|your[-_ ]|replace|example|placeholder|change[-_ ]?me|xxxx|todo|dummy|\.\.\.|^\*+$)/i;
-
-export interface KeyShape {
-  id: string;
-  label: string;
-  severity: Severity;
-  pattern: RegExp;
-}
-
-/** Well-known credential shapes. Patterns are assembled from parts so this file holds no key-like literal. */
-export const KEY_SHAPES: readonly KeyShape[] = [
-  { id: "stripe-live", label: "Stripe live secret key", severity: "critical", pattern: new RegExp("\\b(?:sk|rk)" + "_live_[0-9A-Za-z]{16,}") },
-  { id: "stripe-test", label: "Stripe test secret key", severity: "medium", pattern: new RegExp("\\b(?:sk|rk)" + "_test_[0-9A-Za-z]{16,}") },
-  { id: "stripe-webhook", label: "Stripe webhook signing secret", severity: "high", pattern: new RegExp("\\bwh" + "sec_[0-9A-Za-z+/=]{16,}") },
-  { id: "aws-access-key", label: "AWS access key id", severity: "critical", pattern: new RegExp("\\b(?:AK|AS)" + "IA[0-9A-Z]{16}\\b") },
-  { id: "github-token", label: "GitHub token", severity: "critical", pattern: new RegExp("\\bgh[pousr]" + "_[0-9A-Za-z]{36,}\\b") },
-  { id: "github-pat", label: "GitHub fine-grained token", severity: "critical", pattern: new RegExp("\\bgithub" + "_pat_[0-9A-Za-z_]{40,}") },
-  { id: "slack-token", label: "Slack token", severity: "high", pattern: new RegExp("\\bxox[abprs]" + "-[0-9A-Za-z-]{10,}") },
-  { id: "google-api-key", label: "Google API key (public if it is a Firebase web key)", severity: "medium", pattern: new RegExp("\\bAI" + "za[0-9A-Za-z_-]{35}\\b") },
-  { id: "private-key", label: "Private key block", severity: "critical", pattern: new RegExp("-----BEGIN (?:[A-Z]+ )?PRIV" + "ATE KEY-----") },
-  { id: "sk-key", label: "Secret key with an sk- prefix", severity: "high", pattern: new RegExp("\\bsk" + "-[A-Za-z0-9_-]{20,}") },
-  { id: "postgres-url", label: "Database URL with an embedded password", severity: "high", pattern: /\bpostgres(?:ql)?:\/\/[^:/\s@]+:([^@\s]{4,})@/ },
-  { id: "jwt", label: "JWT", severity: "critical", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.(eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{8,}/ },
-];
 
 export function shannonEntropy(s: string): number {
   const counts = new Map<string, number>();
@@ -47,14 +26,11 @@ export function shannonEntropy(s: string): number {
   return h;
 }
 
-export function redact(secret: string): string {
-  return `${secret.slice(0, 4)}…[${secret.length} chars]`;
-}
-
 interface Hit {
   label: string;
   severity: Severity;
-  secret: string;
+  /** What the report may show instead of the value. */
+  redacted: string;
 }
 
 /** Matches a string value against the known shapes. Returns null for placeholders and public JWTs. */
@@ -67,7 +43,7 @@ export function detectKeyShape(value: string): Hit | null {
       try {
         const payload: unknown = JSON.parse(Buffer.from(m[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
         if (typeof payload === "object" && payload !== null && "role" in payload && payload.role === "service_role") {
-          return { label: "Supabase service-role JWT", severity: "critical", secret };
+          return { label: "Supabase service-role JWT", severity: "critical", redacted: `[JWT, ${secret.length} chars]` };
         }
       } catch {
         // not a JSON payload: not a token this rule understands
@@ -77,10 +53,11 @@ export function detectKeyShape(value: string): Hit | null {
     if (shape.id === "postgres-url") {
       const password = m[1]!;
       if (PLACEHOLDER.test(password) || /^(?:password|postgres|pass|secret)$/i.test(password)) return null;
-      return { label: shape.label, severity: shape.severity, secret: password };
+      return { label: shape.label, severity: shape.severity, redacted: `[database password, ${password.length} chars]` };
     }
     if (shape.id !== "private-key" && new Set(secret.slice(-12)).size < 4) continue;
-    return { label: shape.label, severity: shape.severity, secret };
+    if (shape.id === "private-key") return { label: shape.label, severity: shape.severity, redacted: `[private key block, ${value.length} chars]` };
+    return { label: shape.label, severity: shape.severity, redacted: redact(secret, shape.showPrefix) };
   }
   return null;
 }
@@ -215,11 +192,12 @@ function scanSource(src: SourceInfo, out: RawFinding[], seen: Set<string>): void
         const line = lineOf(sf, n);
         const hit = detectKeyShape(value);
         if (hit) {
-          out.push(hardcoded(path, line, hit.label, hit.severity, lineText(sf, line).replace(hit.secret, redact(hit.secret))));
+          const name = bindingName(n);
+          out.push(hardcoded(path, line, hit.label, hit.severity, `${name ? `${name} = ` : ""}${hit.redacted}`));
         } else {
           const name = bindingName(n);
           if (name && looksLikeGenericSecret(name, value)) {
-            out.push(hardcoded(path, line, `High-entropy string assigned to ${name}`, "medium", lineText(sf, line).replace(value, redact(value))));
+            out.push(hardcoded(path, line, `High-entropy string assigned to ${name}`, "medium", `${name} = ${redact(value, false)}`));
           }
         }
       }
@@ -248,22 +226,35 @@ interface EnvLine {
   line: number;
 }
 
+/** Line-by-line KEY=value parsing without backtracking patterns, so a hostile line cannot stall it. */
 function parseEnv(text: string): EnvLine[] {
   const out: EnvLine[] = [];
-  text.split(/\r?\n/).forEach((raw, idx) => {
-    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(raw);
-    if (!m) return;
-    let value = m[2]!;
-    const quoted = /^(["'])(.*)\1/.exec(value);
-    if (quoted) value = quoted[2]!;
-    else value = value.replace(/\s+#.*$/, "");
-    out.push({ key: m[1]!, value, line: idx + 1 });
+  text.split("\n").forEach((rawLine, idx) => {
+    let s = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    s = s.trimStart();
+    if (s.startsWith("export ")) s = s.slice(7).trimStart();
+    const eq = s.indexOf("=");
+    if (eq <= 0) return;
+    const key = s.slice(0, eq).trimEnd();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return;
+    let value = s.slice(eq + 1).trim();
+    const quote = value[0];
+    if (quote === '"' || quote === "'") {
+      const close = value.indexOf(quote, 1);
+      value = close === -1 ? value.slice(1) : value.slice(1, close);
+    } else {
+      const hash = value.search(/\s#/);
+      if (hash !== -1) value = value.slice(0, hash).trimEnd();
+    }
+    out.push({ key, value, line: idx + 1 });
   });
   return out;
 }
 
-function scanEnvFiles(files: ReadonlyMap<string, string>, tracked: ReadonlySet<string> | null, out: RawFinding[]): void {
+function scanEnvFiles(ctx: AuditContext, out: RawFinding[]): void {
+  const { files, gitTracked: tracked } = ctx.project;
   const ignore = new GitIgnore(files);
+  ctx.warnings.push(...ignore.warnings);
   const hasGitignore = [...files.keys()].some((p) => p === ".gitignore" || p.endsWith("/.gitignore"));
   for (const [path, text] of files) {
     const name = path.slice(path.lastIndexOf("/") + 1);
@@ -275,8 +266,8 @@ function scanEnvFiles(files: ReadonlyMap<string, string>, tracked: ReadonlySet<s
       if (PUBLIC_LEAK_NAME.test(l.key)) out.push(publicLeak(path, l.line, l.key, `${l.key}=…`, "env file"));
       if (isTemplate && l.value !== "") {
         const hit = detectKeyShape(l.value);
-        if (hit) out.push(hardcoded(path, l.line, hit.label, hit.severity, `${l.key}=${redact(hit.secret)}`));
-        else if (looksLikeGenericSecret(l.key, l.value)) out.push(hardcoded(path, l.line, `High-entropy value for ${l.key}`, "medium", `${l.key}=${redact(l.value)}`));
+        if (hit) out.push(hardcoded(path, l.line, hit.label, hit.severity, `${l.key}=${hit.redacted}`));
+        else if (looksLikeGenericSecret(l.key, l.value)) out.push(hardcoded(path, l.line, `High-entropy value for ${l.key}`, "medium", `${l.key}=${redact(l.value, false)}`));
       }
     }
     if (isTemplate) continue;
@@ -297,10 +288,10 @@ function scanEnvFiles(files: ReadonlyMap<string, string>, tracked: ReadonlySet<s
       file: path,
       line: first,
       title: `${path} is ${state}`,
-      message: `Environment files hold credentials. ${isTracked ? "A tracked file is in every clone and in history even if it is deleted later." : "The next `git add .` will commit it."}${secretKeys.length > 0 ? ` It defines ${secretKeys.map((k) => k.key).join(", ")}.` : " It currently holds only empty or placeholder secret values."}`,
+      message: `Environment files hold credentials. ${isTracked ? "A tracked file is in every clone and in history even if it is deleted later." : 'The next "git add ." will commit it.'}${secretKeys.length > 0 ? ` It defines ${secretKeys.map((k) => k.key).join(", ")}.` : " It currently holds only empty or placeholder secret values."}`,
       evidence: secretKeys.length > 0 ? `${secretKeys[0]!.key}=…` : textLine(text, first).replace(/=.*/, "=…"),
       fix: isTracked
-        ? `Run "git rm --cached ${path}", add ".env*" (and "!.env.example") to .gitignore, rotate every credential the file ever held, and keep a value-free .env.example.`
+        ? `Run: git rm --cached -- ${shellQuote(path)}; then add ".env*" (and "!.env.example") to .gitignore, rotate every credential the file ever held, and keep a value-free .env.example.`
         : `Add ".env*" (and "!.env.example") to .gitignore before the first commit that includes ${path}.`,
     });
   }
@@ -309,7 +300,7 @@ function scanEnvFiles(files: ReadonlyMap<string, string>, tracked: ReadonlySet<s
 export const secretRules: Rule = (ctx) => {
   const out: RawFinding[] = [];
   const seen = new Set<string>();
-  for (const src of ctx.sources) scanSource(src, out, seen);
-  scanEnvFiles(ctx.project.files, ctx.project.gitTracked, out);
+  for (const src of ctx.sources) ctx.guard(src.path, () => scanSource(src, out, seen));
+  scanEnvFiles(ctx, out);
   return out;
 };

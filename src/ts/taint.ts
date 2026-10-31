@@ -5,7 +5,15 @@
  * treated as no longer client-controlled.
  */
 import ts from "typescript";
+import { tick } from "../limits.js";
 import { calleeName, isFunctionLike, type Entry } from "./source.js";
+
+/** Last name of an identifier or property access, without printing the expression. */
+function tailName(e: ts.Node): string {
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isPropertyAccessExpression(e)) return e.name.text;
+  return "";
+}
 
 const PASS_THROUGH: Record<string, true> = {
   Number: true,
@@ -60,6 +68,7 @@ export function bindingNames(name: ts.BindingName, out: string[] = []): string[]
 }
 
 export function isTainted(node: ts.Node, tainted: ReadonlySet<string>): boolean {
+  tick();
   if (ts.isIdentifier(node)) return tainted.has(node.text);
   if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node) || ts.isAwaitExpression(node) || ts.isSpreadElement(node)) {
     return isTainted(node.expression, tainted);
@@ -67,7 +76,7 @@ export function isTainted(node: ts.Node, tainted: ReadonlySet<string>): boolean 
   if (ts.isPropertyAccessExpression(node)) {
     if (NON_USER_PROPS[node.name.text] === true) return false;
     // window.location.search and location.hash carry attacker-chosen text
-    if (/^(?:search|hash)$/.test(node.name.text) && /location$/.test(node.expression.getText())) return true;
+    if (/^(?:search|hash)$/.test(node.name.text) && tailName(node.expression) === "location") return true;
     return isTainted(node.expression, tainted);
   }
   if (ts.isElementAccessExpression(node)) return isTainted(node.expression, tainted);
@@ -115,6 +124,7 @@ export function computeTaint(body: ts.Node | undefined, seeds: readonly string[]
   for (let pass = 0; pass < 12; pass++) {
     const before = tainted.size;
     const visit = (n: ts.Node): void => {
+      tick();
       if (ts.isVariableDeclaration(n) && n.initializer && isTainted(n.initializer, tainted)) {
         bindingNames(n.name).forEach((name) => tainted.add(name));
       } else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && isTainted(n.right, tainted)) {

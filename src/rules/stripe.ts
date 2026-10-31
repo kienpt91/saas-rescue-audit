@@ -12,7 +12,76 @@ export function isStripeWebhook(src: SourceInfo): boolean {
   if (!src.isAppRoute && !src.isPagesApi) return false;
   if (!/stripe/i.test(src.text)) return false;
   if (/webhook/i.test(src.path) || src.text.includes("stripe-signature") || /constructEvent(?:Async)?\b/.test(src.text)) return true;
-  return findAll(src.sf, (n): n is ts.StringLiteral => ts.isStringLiteral(n)).some((s) => EVENT_TYPE_STRING.test(s.text));
+  if (findAll(src.sf, (n): n is ts.StringLiteral => ts.isStringLiteral(n)).some((s) => EVENT_TYPE_STRING.test(s.text))) return true;
+  // a handler that builds event names dynamically still reads event.type
+  return findAll(src.sf, (n): n is ts.PropertyAccessExpression => ts.isPropertyAccessExpression(n)).some((p) => p.name.text === "type" && ts.isIdentifier(p.expression) && /^(?:event|evt|stripeEvent)$/.test(p.expression.text));
+}
+
+/** Functions a request can reach: the entry points, plus same-file functions they call by name. */
+function reachableFunctions(src: SourceInfo): Set<ts.Node> {
+  const reachable = new Set<ts.Node>(src.entries.map((e) => e.fn));
+  const locals = new Map<string, ts.Node>();
+  for (const stmt of src.sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) locals.set(stmt.name.text, stmt);
+    else if (ts.isVariableStatement(stmt)) {
+      for (const d of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) locals.set(d.name.text, d.initializer);
+      }
+    }
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    let grew = false;
+    for (const fn of [...reachable]) {
+      for (const call of findAll(fn, (n): n is ts.CallExpression => ts.isCallExpression(n))) {
+        const target = ts.isIdentifier(call.expression) ? locals.get(call.expression.text) : undefined;
+        if (target && !reachable.has(target)) {
+          reachable.add(target);
+          grew = true;
+        }
+      }
+    }
+    if (!grew) break;
+  }
+  return reachable;
+}
+
+function receiverNames(expr: ts.Node, out: string[] = []): string[] {
+  const e = unwrap(expr);
+  if (ts.isIdentifier(e)) out.push(e.text);
+  else if (ts.isPropertyAccessExpression(e)) {
+    out.push(e.name.text);
+    receiverNames(e.expression, out);
+  } else if (ts.isCallExpression(e)) receiverNames(e.expression, out);
+  return out;
+}
+
+/** `if (false) { ... }` and the else branch of `if (true)`: code that cannot run. */
+function inDeadBranch(node: ts.Node): boolean {
+  for (let child: ts.Node = node, p = node.parent; p; child = p, p = p.parent) {
+    if (ts.isIfStatement(p)) {
+      const cond = unwrap(p.expression);
+      const isFalse = cond.kind === ts.SyntaxKind.FalseKeyword || (ts.isNumericLiteral(cond) && cond.text === "0");
+      const isTrue = cond.kind === ts.SyntaxKind.TrueKeyword || (ts.isNumericLiteral(cond) && cond.text !== "0");
+      if ((child === p.thenStatement && isFalse) || (child === p.elseStatement && isTrue)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A call that verifies a signature: `<something>.webhooks.constructEvent(...)` (or the async form) or a
+ * helper named in `authHelpers`, inside code a request can reach and not inside `if (false)`. A function
+ * that merely happens to be called constructEvent, or one that is declared and never called, does not count.
+ */
+function isVerification(call: ts.CallExpression, reachable: ReadonlySet<ts.Node>, authHelpers: readonly string[]): boolean {
+  const callee = unwrap(call.expression);
+  const stripeCall = ts.isPropertyAccessExpression(callee) && /^constructEvent(?:Async)?$/.test(callee.name.text) && receiverNames(callee.expression).includes("webhooks");
+  if (!stripeCall && !authHelpers.includes(calleeName(call.expression))) return false;
+  if (inDeadBranch(call)) return false;
+  for (let p: ts.Node | undefined = call.parent; p; p = p.parent) {
+    if (reachable.has(p)) return true;
+  }
+  return false;
 }
 
 function isParseCall(call: ts.CallExpression): boolean {
@@ -85,12 +154,13 @@ function unknownEventFailure(sf: ts.SourceFile): { node: ts.Node; what: string }
   return result;
 }
 
-function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], out: RawFinding[]): void {
+function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], authHelpers: readonly string[], out: RawFinding[]): void {
   const { sf, path } = src;
   const handler = src.entries.find((e) => e.name === "POST") ?? src.entries[0];
   const handlerLine = handler ? lineOf(sf, handler.decl) : 1;
   const calls = findAll(sf, (n): n is ts.CallExpression => ts.isCallExpression(n));
-  const verifications = calls.filter((c) => /^constructEvent(?:Async)?$/.test(calleeName(c.expression)));
+  const reachableFns = reachableFunctions(src);
+  const verifications = calls.filter((c) => isVerification(c, reachableFns, authHelpers));
   const parseCalls = calls.filter(isParseCall);
 
   if (verifications.length === 0) {
@@ -129,9 +199,11 @@ function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], o
     }
 
     // idempotency: does the handler read event.id at all?
-    const eventName = boundName(first);
-    const usesId = eventName !== null && findAll(sf, (n): n is ts.PropertyAccessExpression => ts.isPropertyAccessExpression(n)).some((p) => ts.isIdentifier(p.expression) && p.expression.text === eventName && p.name.text === "id");
-    const destructuresId = eventName !== null && findAll(sf, (n): n is ts.VariableDeclaration => ts.isVariableDeclaration(n)).some((d) => d.initializer && ts.isIdentifier(d.initializer) && d.initializer.text === eventName && ts.isObjectBindingPattern(d.name) && d.name.elements.some((el) => ts.isIdentifier(el.name) && (el.propertyName ? ts.isIdentifier(el.propertyName) && el.propertyName.text === "id" : el.name.text === "id")));
+    const bound = boundName(first);
+    // the verified event may come back from a helper, so conventional names count as well
+    const eventNames = new Set([...(bound ? [bound] : []), "event", "evt", "stripeEvent"]);
+    const usesId = findAll(sf, (n): n is ts.PropertyAccessExpression => ts.isPropertyAccessExpression(n)).some((p) => ts.isIdentifier(p.expression) && eventNames.has(p.expression.text) && p.name.text === "id");
+    const destructuresId = findAll(sf, (n): n is ts.VariableDeclaration => ts.isVariableDeclaration(n)).some((d) => d.initializer && ts.isIdentifier(d.initializer) && eventNames.has(d.initializer.text) && ts.isObjectBindingPattern(d.name) && d.name.elements.some((el) => ts.isIdentifier(el.name) && (el.propertyName ? ts.isIdentifier(el.propertyName) && el.propertyName.text === "id" : el.name.text === "id")));
     const helper = calls.some((c) => IDEMPOTENCY_NAME.test(calleeName(c.expression)) || extraIdempotency.includes(calleeName(c.expression)));
     if (!usesId && !destructuresId && !helper) {
       const line = lineOf(sf, first);
@@ -245,11 +317,13 @@ export const stripeRules: Rule = (ctx) => {
   const out: RawFinding[] = [];
   for (const src of ctx.sources) {
     if (src.isClient) continue;
-    if (isStripeWebhook(src)) webhookFindings(src, ctx.config.idempotencyHelpers, out);
-    for (const entry of src.entries) {
-      if (entry.kind === "page") continue;
-      checkoutFindings(src, entry, ctx.config.dataAccessRoots, out);
-    }
+    ctx.guard(src.path, () => {
+      if (isStripeWebhook(src)) webhookFindings(src, ctx.config.idempotencyHelpers, ctx.config.authHelpers, out);
+      for (const entry of src.entries) {
+        if (entry.kind === "page") continue;
+        checkoutFindings(src, entry, ctx.config.dataAccessRoots, out);
+      }
+    });
   }
   return out;
 };

@@ -41,8 +41,6 @@ export const DEFAULT_AUTH_HELPERS = [
   "isAuthenticated",
   "ensureAuthenticated",
   // webhook and cron style authentication
-  "constructEvent",
-  "constructEventAsync",
   "timingSafeEqual",
 ];
 
@@ -96,14 +94,25 @@ function hasAuth(entry: Entry, names: ReadonlySet<string>): boolean {
   return credentialRead(entry.fn);
 }
 
+const dataHelperCache = new WeakMap<SourceInfo, Map<string, "read" | "write">>();
+
+/** Same-file functions that touch the database, computed once per file. */
+function dataHelpers(src: SourceInfo, extraRoots: readonly string[]): Map<string, "read" | "write"> {
+  let helpers = dataHelperCache.get(src);
+  if (!helpers) {
+    helpers = new Map();
+    for (const [name, fn] of localFunctions(src)) {
+      const ops = findDataOps(fn, extraRoots);
+      if (ops.length > 0) helpers.set(name, ops.some((o) => o.kind === "write") ? "write" : "read");
+    }
+    dataHelperCache.set(src, helpers);
+  }
+  return helpers;
+}
+
 function localDataOps(entry: Entry, src: SourceInfo, extraRoots: readonly string[]): { node: ts.Node; kind: "read" | "write" }[] {
   const direct = findDataOps(entry.fn, extraRoots).map((o) => ({ node: o.node, kind: o.kind }));
-  const dataFns = new Map<string, "read" | "write">();
-  for (const [name, fn] of localFunctions(src)) {
-    if (fn === entry.fn) continue;
-    const ops = findDataOps(fn, extraRoots);
-    if (ops.length > 0) dataFns.set(name, ops.some((o) => o.kind === "write") ? "write" : "read");
-  }
+  const dataFns = dataHelpers(src, extraRoots);
   const viaHelpers = findAll(entry.fn, (n): n is ts.CallExpression => ts.isCallExpression(n))
     .filter((c) => ts.isIdentifier(c.expression) && dataFns.has(c.expression.text))
     .map((c) => ({ node: c as ts.Node, kind: dataFns.get((c.expression as ts.Identifier).text)! }));
@@ -167,30 +176,33 @@ export const authRules: Rule = (ctx) => {
   const owners = new Set([...tenantColumnSet(ctx.config.tenantColumns), "uid", "user", "owner"]);
   for (const src of ctx.sources) {
     if (src.isClient || src.entries.length === 0) continue;
-    const webhook = isStripeWebhook(src);
-    const names = authNames(src, ctx.config.authHelpers);
-    for (const entry of src.entries) {
-      if (entry.kind === "page") continue;
-      idorFindings(src, entry, owners, ctx.config.dataAccessRoots, out);
-      if (webhook || isPublic(src.path)) continue;
-      if (hasAuth(entry, names)) continue;
-      const ops = localDataOps(entry, src, ctx.config.dataAccessRoots);
-      if (ops.length === 0) continue;
-      const first = ops[0]!;
-      const writes = ops.some((o) => o.kind === "write");
-      const declLine = lineOf(src.sf, entry.decl);
-      const opLine = lineOf(src.sf, first.node);
-      out.push({
-        rule: "api-route-no-auth",
-        severity: writes ? "critical" : "high",
-        file: src.path,
-        line: declLine,
-        title: `${entryLabel(entry)} ${writes ? "writes" : "reads"} data without an auth check`,
-        message: `No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this ${entry.kind === "action" ? "server action" : "handler"}. ${entry.kind === "action" ? "Server actions are public POST endpoints regardless of where they are imported." : "Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate."}`,
-        evidence: declLine === opLine ? `L${declLine}: ${lineText(src.sf, declLine)}` : `L${declLine}: ${lineText(src.sf, declLine)}\nL${opLine}: ${lineText(src.sf, opLine)}`,
-        fix: "Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
-      });
-    }
+    ctx.guard(src.path, () => {
+      const webhook = isStripeWebhook(src);
+      const names = authNames(src, ctx.config.authHelpers);
+      const publicRoute = isPublic(src.path);
+      for (const entry of src.entries) {
+        if (entry.kind === "page") continue;
+        idorFindings(src, entry, owners, ctx.config.dataAccessRoots, out);
+        if (webhook || hasAuth(entry, names)) continue;
+        const ops = localDataOps(entry, src, ctx.config.dataAccessRoots);
+        if (ops.length === 0) continue;
+        const first = ops[0]!;
+        const writes = ops.some((o) => o.kind === "write");
+        const declLine = lineOf(src.sf, entry.decl);
+        const opLine = lineOf(src.sf, first.node);
+        out.push({
+          rule: "api-route-no-auth",
+          severity: writes ? "critical" : "high",
+          file: src.path,
+          line: declLine,
+          title: `${entryLabel(entry)} ${writes ? "writes" : "reads"} data without an auth check`,
+          message: `No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this ${entry.kind === "action" ? "server action" : "handler"}. ${entry.kind === "action" ? "Server actions are public POST endpoints regardless of where they are imported." : "Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate."}`,
+          evidence: declLine === opLine ? `L${declLine}: ${lineText(src.sf, declLine)}` : `L${declLine}: ${lineText(src.sf, declLine)}\nL${opLine}: ${lineText(src.sf, opLine)}`,
+          fix: "Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
+          ...(publicRoute ? { suppressedBy: "config publicRoutes" } : {}),
+        });
+      }
+    });
   }
   return out;
 };

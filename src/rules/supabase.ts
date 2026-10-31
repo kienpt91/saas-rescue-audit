@@ -1,4 +1,4 @@
-import { isConstantTrue, referencesColumn, type PolicyInfo, type TableInfo } from "../sql/model.js";
+import { foldConstant, isConstantTrue, scopesToCaller, type PolicyInfo, type TableInfo } from "../sql/model.js";
 import { tokensToText, type Token } from "../sql/tokenizer.js";
 import { normalizeColumn } from "../ts/calls.js";
 import type { RawFinding, Severity } from "../types.js";
@@ -18,7 +18,9 @@ function ownerColumns(table: TableInfo, tenantSet: ReadonlySet<string>): string[
 }
 
 function clauseText(label: string, expr: Token[] | null): string {
-  return expr ? `${label} (${tokensToText(expr)})` : "";
+  if (!expr) return "";
+  const text = tokensToText(expr);
+  return `${label} (${text.length > 160 ? text.slice(0, 159) + "…" : text})`;
 }
 
 function permissiveFinding(policy: PolicyInfo, table: TableInfo, hasOwnerColumn: boolean, ctx: AuditContext): RawFinding | null {
@@ -31,18 +33,31 @@ function permissiveFinding(policy: PolicyInfo, table: TableInfo, hasOwnerColumn:
   // which clause governs the command
   const using = policy.using;
   const check = policy.check ?? (policy.command === "all" || policy.command === "update" ? policy.using : null);
-  let open = false;
+  let governing: (Token[] | null)[];
   let clause = "";
   if (policy.command === "insert") {
-    open = isConstantTrue(policy.check);
+    governing = [policy.check];
     clause = clauseText("WITH CHECK", policy.check);
   } else if (policy.command === "select" || policy.command === "delete") {
-    open = isConstantTrue(using);
+    governing = [using];
     clause = clauseText("USING", using);
   } else {
-    open = isConstantTrue(using) || isConstantTrue(policy.check);
+    governing = [using, policy.check];
     clause = isConstantTrue(using) ? clauseText("USING", using) : clauseText("WITH CHECK", check);
   }
+  if (governing.some((g) => g !== null && foldConstant(g) === "too-deep")) {
+    return {
+      rule: "supabase-policy-permissive",
+      severity: "medium",
+      file: policy.file,
+      line: policy.line,
+      evidence: textLine(ctx.project.files.get(policy.file) ?? "", policy.line),
+      title: `Policy "${policy.name}" is nested too deeply to analyse`,
+      message: "The expression groups conditions more than 64 levels deep, so it could not be checked for constant-true conditions. A policy that cannot be read by a reviewer is not a policy to rely on.",
+      fix: "Rewrite the expression flat: one condition per line, tied to auth.uid().",
+    };
+  }
+  const open = governing.some((g) => isConstantTrue(g));
 
   const file = policy.file;
   const line = policy.line;
@@ -90,7 +105,7 @@ export const supabaseRules: Rule = (ctx) => {
     policiesByTable.set(p.table, list);
   }
 
-  for (const [key, table] of ctx.sql.tables) {
+  for (const [key, table] of ctx.sql.tables) ctx.guard(table.file, () => {
     const owners = ownerColumns(table, tenantSet);
     const evidence = textLine(ctx.project.files.get(table.file) ?? "", table.line);
     const where = { file: table.file, line: table.line, evidence };
@@ -103,7 +118,7 @@ export const supabaseRules: Rule = (ctx) => {
         message: `Tables in the public schema are exposed through the REST API to anyone with the anon key. Without ENABLE ROW LEVEL SECURITY every row can be read${owners.length > 0 ? ` (${table.name} has ${owners.join(", ")}, so these are per-user rows)` : ""} and, with the default grants, written.`,
         fix: `Add "alter table ${table.schema}.${table.name} enable row level security;" in a migration, then add policies for each operation the app needs.`,
       });
-      continue;
+      return;
     }
     const policies = (policiesByTable.get(key) ?? []).filter((p) => !p.roles.every((r) => SERVICE_ROLES[r] === true));
     if (policies.length === 0) {
@@ -115,25 +130,25 @@ export const supabaseRules: Rule = (ctx) => {
         message: "With RLS on and no policy, anon and authenticated clients are denied every operation. Either the table is only used through the service role, or the app is broken and the quick fix will be to switch RLS off or add a policy with USING (true).",
         fix: "Add one policy per operation the app needs, scoped with auth.uid(). If only server code touches the table, document that and suppress this finding.",
       });
-      continue;
+      return;
     }
     for (const policy of policies) {
       const f = permissiveFinding(policy, table, owners.length > 0, ctx);
       if (f) out.push(f);
     }
     if (owners.length > 0) {
-      const scoped = policies.some((p) => p.permissive && owners.some((col) => referencesColumn(p.using, col) || referencesColumn(p.check, col)));
+      const scoped = policies.some((p) => p.permissive && owners.some((col) => scopesToCaller(p.using, col) || scopesToCaller(p.check, col)));
       if (!scoped) {
         out.push({
           ...where,
           rule: "supabase-tenant-unscoped",
           severity: "high",
-          title: `No policy on ${table.name} references ${owners.join(" / ")}`,
-          message: `${table.name} has ${owners.join(", ")} to identify who owns a row, but none of its ${policies.length} polic${policies.length === 1 ? "y mentions" : "ies mention"} it. Any user the policies admit can reach every other user's or tenant's rows.`,
+          title: `No policy on ${table.name} ties ${owners.join(" / ")} to the caller`,
+          message: `${table.name} has ${owners.join(", ")} to identify who owns a row, but none of its ${policies.length} polic${policies.length === 1 ? "y compares" : "ies compare"} it with auth.uid() or passes it to a membership function. Any user the policies admit can reach every other user's or tenant's rows.`,
           fix: `Add the owner column to the USING and WITH CHECK expressions, for example using (auth.uid() = ${owners[0]}) with check (auth.uid() = ${owners[0]}).`,
         });
       }
     }
-  }
+  });
   return out;
 };

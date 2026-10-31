@@ -1,4 +1,6 @@
 import ts from "typescript";
+import { BudgetError, DEFAULT_LIMITS, tick, withBudget, type Limits } from "../limits.js";
+import { evidenceLine } from "../redact.js";
 import type { Project } from "../types.js";
 
 export type FunctionLike = ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration;
@@ -58,12 +60,25 @@ export function lineOf(sf: ts.SourceFile, node: ts.Node): number {
   return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
 }
 
+const evidenceCache = new WeakMap<ts.SourceFile, Map<number, string>>();
+
+/** A source line as evidence: trimmed, scrubbed of credential-shaped substrings, truncated. */
 export function lineText(sf: ts.SourceFile, line: number, max = 180): string {
-  const starts = sf.getLineStarts();
-  const from = starts[line - 1] ?? 0;
-  const to = starts[line] ?? sf.text.length;
-  const text = sf.text.slice(from, to).replace(/\s+$/, "").trim();
-  return text.length > max ? text.slice(0, max - 1) + "…" : text;
+  let perFile = evidenceCache.get(sf);
+  if (!perFile) {
+    perFile = new Map();
+    evidenceCache.set(sf, perFile);
+  }
+  const key = line * 1000 + max;
+  let out = perFile.get(key);
+  if (out === undefined) {
+    const starts = sf.getLineStarts();
+    const from = starts[line - 1] ?? 0;
+    const to = starts[line] ?? sf.text.length;
+    out = evidenceLine(sf.text.slice(from, to), max);
+    perFile.set(key, out);
+  }
+  return out;
 }
 
 export function unwrap(node: ts.Node): ts.Node {
@@ -152,31 +167,69 @@ function collectEntries(sf: ts.SourceFile, info: Pick<SourceInfo, "isAppRoute" |
   return entries;
 }
 
-export function parseSource(path: string, text: string): SourceInfo {
+export class TooDeepError extends Error {
+  override name = "TooDeepError";
+}
+
+/** Depth of the syntax tree, computed without recursion. Stops counting once it passes `limit`. */
+function treeDepth(root: ts.Node, limit: number): number {
+  let max = 0;
+  const stack: { node: ts.Node; depth: number }[] = [{ node: root, depth: 1 }];
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop()!;
+    if (depth > max) max = depth;
+    if (max > limit) return max;
+    ts.forEachChild(node, (child) => {
+      stack.push({ node: child, depth: depth + 1 });
+    });
+  }
+  return max;
+}
+
+export function parseSource(path: string, text: string, maxDepth = DEFAULT_LIMITS.maxAstDepth): SourceInfo {
   const sf = ts.createSourceFile(path, text, ts.ScriptTarget.ES2022, true, scriptKind(path));
+  const depth = treeDepth(sf, maxDepth);
+  if (depth > maxDepth) throw new TooDeepError(`not analysed: syntax tree nests deeper than ${maxDepth} levels`);
   const prologue = directives(sf.statements);
-  const isAppRoute = /(?:^|\/)app\/(?:.+\/)?route\.[cm]?[jt]sx?$/.test(path);
-  const isPagesApi = /(?:^|\/)pages\/api\//.test(path);
-  const isAppPage = /(?:^|\/)app\/(?:.+\/)?(?:page|layout)\.[jt]sx?$/.test(path);
+  const segments = path.split("/");
+  const dirs = segments.slice(0, -1);
+  const base = segments[segments.length - 1] ?? "";
+  const pagesAt = dirs.indexOf("pages");
+  const isAppRoute = /^route\.[cm]?[jt]sx?$/.test(base) && dirs.includes("app");
+  const isPagesApi = pagesAt !== -1 && dirs[pagesAt + 1] === "api";
+  const isAppPage = /^(?:page|layout)\.[jt]sx?$/.test(base) && dirs.includes("app");
   const isServerActionFile = prologue.includes("use server");
   const isClient = prologue.includes("use client");
   const entries = collectEntries(sf, { isAppRoute, isPagesApi, isAppPage, isServerActionFile });
   return { path, text, sf, isClient, isServerActionFile, isAppRoute, isPagesApi, isAppPage, entries };
 }
 
-/** Parses every JS/TS file in the project, in path order. */
-export function parseProject(project: Project): SourceInfo[] {
+/** Parses every JS/TS file in the project, in path order. Files that cannot be parsed are recorded in `skipped`. */
+export function parseProject(project: Project, limits: Limits, skipped: string[]): SourceInfo[] {
   const out: SourceInfo[] = [];
   for (const [path, text] of project.files) {
-    if (isSourcePath(path)) out.push(parseSource(path, text));
+    if (!isSourcePath(path)) continue;
+    try {
+      out.push(withBudget(limits.fileBudgetMs, () => parseSource(path, text, limits.maxAstDepth)));
+    } catch (error) {
+      skipped.push(`${path}: ${describeParseFailure(error)}`);
+    }
   }
   return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+function describeParseFailure(error: unknown): string {
+  if (error instanceof TooDeepError) return error.message;
+  if (error instanceof BudgetError) return "not analysed: parsing exceeded the time budget";
+  if (error instanceof RangeError) return "not analysed: syntax tree nests too deeply to parse";
+  return `not analysed: parse failed (${error instanceof Error ? error.name : "error"})`;
 }
 
 /** All descendants of `node` (inclusive) satisfying the guard, in source order. */
 export function findAll<T extends ts.Node>(node: ts.Node, guard: (n: ts.Node) => n is T): T[] {
   const out: T[] = [];
   const visit = (n: ts.Node): void => {
+    tick();
     if (guard(n)) out.push(n);
     ts.forEachChild(n, visit);
   };

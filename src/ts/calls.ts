@@ -3,6 +3,7 @@
  * `supabase.from("t").select().eq("id", id)` or `prisma.project.findMany({ where })`.
  */
 import ts from "typescript";
+import { tick } from "../limits.js";
 import { unwrap } from "./source.js";
 
 export interface Link {
@@ -155,6 +156,7 @@ export function findDataOps(root: ts.Node, extraRoots: readonly string[] = []): 
   const roots = new RegExp(`^(?:${[ROOT_NAMES, ...extra].join("|")})$`, "i");
   const ops: DataOp[] = [];
   const visit = (n: ts.Node): void => {
+    tick();
     if (ts.isCallExpression(n) && isChainTerminal(n)) {
       const op = classify(flattenChain(n), roots);
       if (op) ops.push(op);

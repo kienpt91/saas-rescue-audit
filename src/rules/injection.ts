@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { tick } from "../limits.js";
 import { calleeName, findAll, lineOf, lineText, unwrap, type SourceInfo } from "../ts/source.js";
 import { computeTaint, isTainted, seedNames } from "../ts/taint.js";
 import type { RawFinding } from "../types.js";
@@ -119,13 +120,41 @@ function identifiersIn(node: ts.Node): string[] {
   return findAll(node, (n): n is ts.Identifier => ts.isIdentifier(n)).map((i) => i.text);
 }
 
+interface ScopeIndex {
+  calls: ts.CallExpression[];
+  binaries: ts.BinaryExpression[];
+  declarations: ts.VariableDeclaration[];
+  identifiers: Map<string, ts.Identifier[]>;
+}
+
+const scopeCache = new WeakMap<ts.Node, ScopeIndex>();
+
+/** One pass over a scope, so every redirect in it shares the same lists. */
+function indexScope(scope: ts.Node): ScopeIndex {
+  let index = scopeCache.get(scope);
+  if (index) return index;
+  index = { calls: [], binaries: [], declarations: [], identifiers: new Map() };
+  for (const n of findAll(scope, (x): x is ts.Node => true)) {
+    if (ts.isCallExpression(n)) index.calls.push(n);
+    else if (ts.isBinaryExpression(n)) index.binaries.push(n);
+    else if (ts.isVariableDeclaration(n) && n.initializer) index.declarations.push(n);
+    else if (ts.isIdentifier(n)) {
+      const list = index.identifiers.get(n.text) ?? [];
+      list.push(n);
+      index.identifiers.set(n.text, list);
+    }
+  }
+  scopeCache.set(scope, index);
+  return index;
+}
+
 /** Tainted names the sink argument depends on, following `const a = f(b)` chains back to their sources. */
-function dependencyNames(scope: ts.Node, arg: ts.Node, tainted: ReadonlySet<string>): Set<string> {
+function dependencyNames(index: ScopeIndex, arg: ts.Node, tainted: ReadonlySet<string>): Set<string> {
   const names = new Set(identifiersIn(arg).filter((n) => tainted.has(n)));
-  const declarations = findAll(scope, (n): n is ts.VariableDeclaration => ts.isVariableDeclaration(n) && n.initializer !== undefined);
   for (let pass = 0; pass < 8; pass++) {
     const before = names.size;
-    for (const d of declarations) {
+    for (const d of index.declarations) {
+      tick();
       if (!ts.isIdentifier(d.name) || !names.has(d.name.text) || !d.initializer) continue;
       for (const id of identifiersIn(d.initializer)) if (tainted.has(id)) names.add(id);
     }
@@ -134,7 +163,30 @@ function dependencyNames(scope: ts.Node, arg: ts.Node, tainted: ReadonlySet<stri
   return names;
 }
 
-function guarded(scope: ts.Node, arg: ts.Node, tainted: ReadonlySet<string>): boolean {
+/**
+ * Whether the value of `node` decides which way the code goes: it is (part of) the condition of an if,
+ * a loop or a ternary, or it is returned from a helper, or it is stored in a variable that is used that way.
+ * A check whose result is thrown away guards nothing.
+ */
+function usedAsCondition(node: ts.Node, index: ScopeIndex, depth = 0): boolean {
+  let child: ts.Node = node;
+  for (let p: ts.Node | undefined = node.parent; p; child = p, p = p.parent) {
+    if (ts.isParenthesizedExpression(p) || ts.isAwaitExpression(p) || (ts.isPrefixUnaryExpression(p) && p.operator === ts.SyntaxKind.ExclamationToken)) continue;
+    if (ts.isBinaryExpression(p) && (p.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || p.operatorToken.kind === ts.SyntaxKind.BarBarToken || p.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)) continue;
+    if (ts.isIfStatement(p) || ts.isWhileStatement(p)) return p.expression === child;
+    if (ts.isConditionalExpression(p)) return p.condition === child;
+    if (ts.isReturnStatement(p) || ts.isArrowFunction(p)) return true;
+    if (ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) && depth < 2) {
+      const name = p.name;
+      return (index.identifiers.get(name.text) ?? []).some((id) => id !== name && usedAsCondition(id, index, depth + 1));
+    }
+    return false;
+  }
+  return false;
+}
+
+/** A check on the redirect target (startsWith, an allow-list lookup, an equality test) that is used as a condition before the sink. */
+function guarded(scope: ts.Node, arg: ts.Node, tainted: ReadonlySet<string>, sinkStart: number): boolean {
   // a direct reference: `next`, `next.length`, `url.origin`, but not `searchParams.get("type")`
   const isRef = (node: ts.Node, name: string): boolean => {
     const e = unwrap(node);
@@ -143,32 +195,46 @@ function guarded(scope: ts.Node, arg: ts.Node, tainted: ReadonlySet<string>): bo
     return false;
   };
   const compares: ts.SyntaxKind[] = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken];
-  for (const name of dependencyNames(scope, arg, tainted)) {
-    for (const call of findAll(scope, (n): n is ts.CallExpression => ts.isCallExpression(n))) {
+  const index = indexScope(scope);
+  for (const name of dependencyNames(index, arg, tainted)) {
+    for (const call of index.calls) {
+      tick();
+      if (call.getStart() >= sinkStart) break;
       const callee = call.expression;
       const cname = calleeName(callee);
-      if (GUARD_CALL.test(cname) && (call.arguments.some((a) => isRef(a, name)) || (/^(?:startsWith|includes|match|matches|indexOf)$/.test(cname) && ts.isPropertyAccessExpression(callee) && isRef(callee.expression, name)))) return true;
-      if (GUARD_HELPER.test(cname) && call.arguments.some((a) => isRef(a, name))) return true;
+      const matches =
+        (GUARD_CALL.test(cname) && (call.arguments.some((a) => isRef(a, name)) || (/^(?:startsWith|includes|match|matches|indexOf)$/.test(cname) && ts.isPropertyAccessExpression(callee) && isRef(callee.expression, name)))) ||
+        (GUARD_HELPER.test(cname) && call.arguments.some((a) => isRef(a, name)));
+      if (matches && usedAsCondition(call, index)) return true;
     }
-    for (const bin of findAll(scope, (n): n is ts.BinaryExpression => ts.isBinaryExpression(n))) {
-      if (compares.includes(bin.operatorToken.kind) && (isRef(bin.left, name) || isRef(bin.right, name))) return true;
+    for (const bin of index.binaries) {
+      tick();
+      if (bin.getStart() >= sinkStart) break;
+      if (compares.includes(bin.operatorToken.kind) && (isRef(bin.left, name) || isRef(bin.right, name)) && usedAsCondition(bin, index)) return true;
     }
   }
   return false;
+}
+
+/** Last name of an identifier or property access, without printing the expression. */
+function tailName(e: ts.Node): string {
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isPropertyAccessExpression(e)) return e.name.text;
+  return "";
 }
 
 function redirectTarget(n: ts.Node): ts.Node | null {
   if (ts.isCallExpression(n)) {
     const callee = n.expression;
     const name = calleeName(callee);
-    const receiver = ts.isPropertyAccessExpression(callee) ? callee.expression.getText() : "";
+    const receiver = ts.isPropertyAccessExpression(callee) ? tailName(callee.expression) : "";
     if (ts.isIdentifier(callee) && /^(?:redirect|permanentRedirect)$/.test(name)) return n.arguments[0] ?? null;
-    if (ts.isPropertyAccessExpression(callee) && name === "redirect" && /(?:NextResponse|Response|res|response)$/.test(receiver)) return n.arguments[n.arguments.length - 1] ?? null;
+    if (ts.isPropertyAccessExpression(callee) && name === "redirect" && /^(?:NextResponse|Response|res|response)$/.test(receiver)) return n.arguments[n.arguments.length - 1] ?? null;
     if (ts.isPropertyAccessExpression(callee) && /^(?:push|replace)$/.test(name) && /router$/i.test(receiver)) return n.arguments[0] ?? null;
-    if (ts.isPropertyAccessExpression(callee) && /^(?:assign|replace)$/.test(name) && /location$/.test(receiver)) return n.arguments[0] ?? null;
+    if (ts.isPropertyAccessExpression(callee) && /^(?:assign|replace)$/.test(name) && receiver === "location") return n.arguments[0] ?? null;
   } else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(n.left)) {
-    const left = n.left.getText();
-    if (/(?:^|\.)location(?:\.href)?$/.test(left)) return n.right;
+    const left = n.left;
+    if (left.name.text === "location" || (left.name.text === "href" && tailName(left.expression) === "location")) return n.right;
   }
   return null;
 }
@@ -182,7 +248,7 @@ function redirectFindings(src: SourceInfo, out: RawFinding[]): void {
       const arg = redirectTarget(node);
       if (!arg || seen.has(node) || !isTainted(arg, tainted)) continue;
       seen.add(node);
-      if (hostIsFixed(arg, tainted) || guarded(root, arg, tainted)) continue;
+      if (hostIsFixed(arg, tainted) || guarded(root, arg, tainted, node.getStart())) continue;
       const line = lineOf(src.sf, node);
       out.push({
         rule: "open-redirect",
@@ -202,8 +268,10 @@ export const injectionRules: Rule = (ctx) => {
   const out: RawFinding[] = [];
   const sanitizers = new Set(ctx.config.sanitizers);
   for (const src of ctx.sources) {
-    htmlFindings(src, sanitizers, out);
-    redirectFindings(src, out);
+    ctx.guard(src.path, () => {
+      htmlFindings(src, sanitizers, out);
+      redirectFindings(src, out);
+    });
   }
   return out;
 };

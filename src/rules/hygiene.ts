@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { shellQuote } from "../shell.js";
 import { findAll, lineOf, lineText, unwrap, type SourceInfo } from "../ts/source.js";
 import type { RawFinding } from "../types.js";
 import { textLine, type AuditContext, type Rule } from "./context.js";
@@ -23,7 +24,8 @@ function originKind(value: ts.Node | undefined): OriginKind {
   const u = unwrap(value);
   if (ts.isStringLiteral(u) || ts.isNoSubstitutionTemplateLiteral(u)) return u.text.trim() === "*" ? "wildcard" : null;
   if (u.kind === ts.SyntaxKind.TrueKeyword) return "reflected";
-  return /origin/i.test(u.getText()) ? "reflected" : null;
+  const mentionsOrigin = findAll(u, (n): n is ts.Identifier | ts.StringLiteral => ts.isIdentifier(n) || ts.isStringLiteral(n)).some((n) => /origin/i.test(n.text));
+  return mentionsOrigin ? "reflected" : null;
 }
 
 function enclosingScope(node: ts.Node): ts.Node {
@@ -194,6 +196,11 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
     }
     if (typeof parsed !== "object" || parsed === null) continue;
     const lines = text.split(/\r?\n/);
+    const keyLine = new Map<string, number>();
+    lines.forEach((l, i) => {
+      const key = /^\s*"([^"]{1,214})"\s*:/.exec(l)?.[1];
+      if (key !== undefined && !keyLine.has(key)) keyLine.set(key, i + 1);
+    });
     let hasDeps = false;
     for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
       const deps: unknown = section in parsed ? Reflect.get(parsed, section) : undefined;
@@ -201,7 +208,7 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
       for (const [name, spec] of Object.entries(deps)) {
         hasDeps = true;
         if (typeof spec !== "string" || !WILDCARD_SPEC.test(spec.trim())) continue;
-        const line = Math.max(1, lines.findIndex((l) => l.includes(`"${name}"`)) + 1);
+        const line = keyLine.get(name) ?? 1;
         out.push({
           rule: "deps-unpinned",
           severity: "low",
@@ -209,8 +216,8 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
           line,
           title: `${name} is declared as "${spec}"`,
           message: "Every install can resolve to a different major version, including one published minutes ago. Builds stop being reproducible and a compromised release is picked up automatically.",
-          evidence: lines[line - 1]?.trim() ?? "",
-          fix: `Pin ${name} to the version in use (npm install ${name}@<version> --save-exact) and commit the lockfile.`,
+          evidence: textLine(text, line),
+          fix: `Pin ${name} to the version in use (npm install ${shellQuote(`${name}@<version>`)} --save-exact) and commit the lockfile.`,
         });
       }
     }
@@ -224,7 +231,7 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
           line: 1,
           title: "No lockfile",
           message: "Without a lockfile transitive dependencies are resolved fresh on every install, so a build today and a build tomorrow can differ.",
-          evidence: lines[0]?.trim() ?? "",
+          evidence: textLine(text, 1),
           fix: "Commit package-lock.json (or the lockfile of your package manager) and install with npm ci in CI.",
         });
       }
@@ -235,11 +242,13 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
 export const hygieneRules: Rule = (ctx) => {
   const out: RawFinding[] = [];
   for (const src of ctx.sources) {
-    corsFindings(src, out);
-    if (/(?:^|\/)next\.config\.[cm]?[jt]s$/.test(src.path)) nextConfigFindings(src, out);
+    ctx.guard(src.path, () => {
+      corsFindings(src, out);
+      if (/(?:^|\/)next\.config\.[cm]?[jt]s$/.test(src.path)) nextConfigFindings(src, out);
+    });
   }
-  rateLimitFindings(ctx, out);
-  securityHeaderFindings(ctx, out);
-  packageFindings(ctx, out);
+  ctx.guard("package.json", () => packageFindings(ctx, out));
+  ctx.guard("next.config", () => securityHeaderFindings(ctx, out));
+  ctx.guard("route handlers", () => rateLimitFindings(ctx, out));
   return out;
 };
