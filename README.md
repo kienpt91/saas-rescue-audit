@@ -183,6 +183,19 @@ Requires Node 22.12 or newer (CI runs 22 and 24). The test suite has no network 
 
 Dependencies are pinned exactly and installed with `--ignore-scripts` and a publish-date cutoff; see [SECURITY.md](SECURITY.md) for the dependency policy, the trust model and the reporting address.
 
+## Secrets and hooks
+
+Never commit `.env` files or credentials. Keep real values in an untracked `.env` and document the variable names in `.env.example` with placeholders only.
+
+Install [lefthook](https://github.com/evilmartians/lefthook) and run `lefthook install` once per clone. This enables two hooks:
+
+- `pre-commit` scans the staged changes (`sh scripts/secret-scan.sh --staged`).
+- `pre-push` scans the whole tree (`sh scripts/secret-scan.sh --tree`).
+
+CI also runs the tree scan and a full-history scan (`--history`). The scanner is a dependency-free POSIX shell script that looks for forbidden file names (such as `.env` or private key files) and for key-shaped values, and it never prints the matched value. A reviewed false positive can be allowed in `.secret-scan-allow` with one line per file and rule, `<path> <rule>   # reason`, or on a single line with the marker `secret-scan: allow`.
+
+If a secret is ever committed, rotate it first, treating it as compromised, and only then remove it from history.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
