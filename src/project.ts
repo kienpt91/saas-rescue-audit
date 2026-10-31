@@ -84,6 +84,7 @@ export function collectProject(root: string, config: Pick<Config, "ignorePaths">
   let ignoredCount = 0;
   let totalBytes = 0;
   let stopped = false;
+  const symlinks: string[] = [];
 
   const noteIgnored = (relPath: string): void => {
     ignoredCount++;
@@ -102,7 +103,10 @@ export function collectProject(root: string, config: Pick<Config, "ignorePaths">
     for (const entry of entries) {
       if (stopped) return;
       const relPath = rel === "" ? entry.name : `${rel}/${entry.name}`;
-      if (entry.isSymbolicLink()) continue;
+      if (entry.isSymbolicLink()) {
+        symlinks.push(relPath);
+        continue;
+      }
       if (entry.isDirectory()) {
         if (ALWAYS_SKIPPED[entry.name] === true || (BUILD_OUTPUT[entry.name] === true && isPackageRoot)) {
           if (skippedDirs.length < MAX_LISTED) skippedDirs.push(relPath);
@@ -138,6 +142,10 @@ export function collectProject(root: string, config: Pick<Config, "ignorePaths">
   };
   walk(root, "", 0);
 
+  if (symlinks.length > 0) {
+    const shown = symlinks.slice(0, 5).join(", ");
+    warnings.push(`${symlinks.length} symbolic link${symlinks.length === 1 ? " was" : "s were"} not followed: ${shown}${symlinks.length > 5 ? `, and ${symlinks.length - 5} more` : ""}`);
+  }
   const gitTracked = readGitIndex(root, warnings);
   return { root, files, paths, gitTracked, warnings, skipped, skippedDirs, ignoredByConfig, ignoredByConfigCount: ignoredCount };
 }

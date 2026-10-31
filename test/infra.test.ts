@@ -212,7 +212,7 @@ describe("project collection", () => {
     expect([...p.files.keys()]).toEqual(["app/a.ts"]);
   });
 
-  it("skips files above the size limit with a warning, and never follows symlinks", () => {
+  it("records a file above the size limit as skipped, and never follows symlinks (it says how many it left alone)", () => {
     const root = tmp();
     const outside = tmp();
     writeFileSync(join(outside, "secret.ts"), "export const outside = 1;");
@@ -222,6 +222,7 @@ describe("project collection", () => {
     const p = collectProject(root, { ignorePaths: [] });
     expect(p.files.size).toBe(0);
     expect(p.skipped).toEqual(["big.ts: not read, larger than 1048576 bytes"]);
+    expect(p.warnings).toEqual(["2 symbolic links were not followed: linked, linked.ts"]);
   });
 
   it("reads tracked paths from .git/index when it is present, and warns when it cannot", () => {

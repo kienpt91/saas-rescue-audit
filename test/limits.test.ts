@@ -228,6 +228,7 @@ describe("reading a hostile directory tree", () => {
       const p = collectProject(root, { ignorePaths: [] });
       expect([...p.files.keys()]).toEqual(["ok.ts"]);
       expect(p.skipped).toEqual(["big.ts: not read, larger than 1048576 bytes"]);
+      expect(p.warnings).toEqual(["1 symbolic link was not followed: link.ts"]);
     });
     expect(t).toBeLessThan(1000);
   });
@@ -321,7 +322,7 @@ describe("the config file in a hostile repository", () => {
     symlinkSync(join(outside, "fake"), join(root, ".git"));
     const p = collectProject(root, { ignorePaths: [] });
     expect(p.gitTracked).toBeNull();
-    expect(p.warnings[0]).toContain(".git is not a plain directory");
+    expect(p.warnings.some((w) => w.includes(".git is not a plain directory"))).toBe(true);
   });
 });
 
