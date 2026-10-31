@@ -1,10 +1,11 @@
 import { createContext, textLine, type Rule } from "./rules/context.js";
 import { secretRules } from "./rules/secrets.js";
+import { stripeRules } from "./rules/stripe.js";
 import { supabaseRules } from "./rules/supabase.js";
 import { applySuppressions } from "./suppress.js";
 import { SEVERITY_RANK, type AuditResult, type Config, type Finding, type Project } from "./types.js";
 
-const RULE_SETS: readonly Rule[] = [supabaseRules, secretRules];
+const RULE_SETS: readonly Rule[] = [supabaseRules, secretRules, stripeRules];
 
 export function compareFindings(a: Finding, b: Finding): number {
   return SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.line - b.line || (a.rule < b.rule ? -1 : a.rule > b.rule ? 1 : 0) || (a.title < b.title ? -1 : a.title > b.title ? 1 : 0);
