@@ -27,7 +27,16 @@ export function audit(project: Project, config: Config): AuditResult {
       const key = `${raw.rule}|${raw.file}|${raw.line}|${raw.title}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      findings.push({ ...raw, evidence: raw.evidence ?? textLine(project.files.get(raw.file) ?? "", raw.line) });
+      findings.push({
+        rule: raw.rule,
+        severity: raw.severity,
+        file: raw.file,
+        line: raw.line,
+        title: raw.title,
+        message: raw.message,
+        evidence: raw.evidence ?? textLine(project.files.get(raw.file) ?? "", raw.line),
+        fix: raw.fix,
+      });
     }
   }
   findings.sort(compareFindings);

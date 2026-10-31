@@ -72,7 +72,7 @@ describe("api-route-no-auth", () => {
   it("flags server actions, in a use server file and inline", () => {
     const file = run({ "app/actions.ts": lines('"use server";', "export async function removeArchived() {", '  await supabase.from("projects").delete().eq("archived", true);', "}") });
     expect(keys(file)).toEqual(["api-route-no-auth@app/actions.ts:2"]);
-    expect(file.findings[0]!.title).toBe("server action removeArchived writes data without an auth check");
+    expect(file.findings[0]!.title).toBe("Server action removeArchived writes data without an auth check");
     const inline = run({
       "app/page.tsx": lines("export default function Page() {", "  async function save(formData: FormData) {", '    "use server";', '    await supabase.from("notes").insert({ body: formData.get("body") });', "  }", "  return <form action={save} />;", "}"),
     });

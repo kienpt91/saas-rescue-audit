@@ -122,6 +122,13 @@ describe("stripe-webhook-no-idempotency", () => {
     expect(stripeFindings(run({ [WEBHOOK]: text }))).toEqual(["stripe-webhook-no-idempotency:5"]);
     expect(stripeFindings(run({ [WEBHOOK]: text }, { config: { idempotencyHelpers: ["claimEvent"] } }))).toEqual([]);
   });
+
+  it("follows an event that is declared first and assigned inside try/catch", () => {
+    const base = (use: string) =>
+      lines(HEAD, "export async function POST(request: Request) {", "  let event: Stripe.Event;", "  try {", "    event = stripe.webhooks.constructEvent(await request.text(), 's', 'w');", "  } catch {", "    return new Response(null, { status: 400 });", "  }", use, "  return new Response(null);", "}", "async function record(id: string) { return id; }");
+    expect(stripeFindings(run({ [WEBHOOK]: base("  await record(event.id);") }))).toEqual([]);
+    expect(stripeFindings(run({ [WEBHOOK]: base("  await record('x');") }))).toEqual(["stripe-webhook-no-idempotency:6"]);
+  });
 });
 
 describe("stripe-webhook-unknown-event-error", () => {

@@ -30,6 +30,14 @@ function enclosingFunction(node: ts.Node): ts.Node {
   return n ?? node;
 }
 
+/** Name the call result is stored in: `const event = f()` or `event = f()`. */
+function boundName(call: ts.CallExpression): string | null {
+  let p: ts.Node = call.parent;
+  while (ts.isAwaitExpression(p) || ts.isParenthesizedExpression(p) || ts.isAsExpression(p) || ts.isNonNullExpression(p)) p = p.parent;
+  if (ts.isVariableDeclaration(p) && ts.isIdentifier(p.name)) return p.name.text;
+  if (ts.isBinaryExpression(p) && p.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(p.left)) return p.left.text;
+  return null;
+}
 /** Numeric status >= 400 in a returned response expression, or null. */
 function errorStatus(node: ts.Node): number | null {
   let found: number | null = null;
@@ -121,8 +129,7 @@ function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], o
     }
 
     // idempotency: does the handler read event.id at all?
-    const decl = findAll(sf, (n): n is ts.VariableDeclaration => ts.isVariableDeclaration(n)).find((d) => d.initializer && findAll(d.initializer, (x): x is ts.CallExpression => ts.isCallExpression(x)).includes(first));
-    const eventName = decl && ts.isIdentifier(decl.name) ? decl.name.text : null;
+    const eventName = boundName(first);
     const usesId = eventName !== null && findAll(sf, (n): n is ts.PropertyAccessExpression => ts.isPropertyAccessExpression(n)).some((p) => ts.isIdentifier(p.expression) && p.expression.text === eventName && p.name.text === "id");
     const destructuresId = eventName !== null && findAll(sf, (n): n is ts.VariableDeclaration => ts.isVariableDeclaration(n)).some((d) => d.initializer && ts.isIdentifier(d.initializer) && d.initializer.text === eventName && ts.isObjectBindingPattern(d.name) && d.name.elements.some((el) => ts.isIdentifier(el.name) && (el.propertyName ? ts.isIdentifier(el.propertyName) && el.propertyName.text === "id" : el.name.text === "id")));
     const helper = calls.some((c) => IDEMPOTENCY_NAME.test(calleeName(c.expression)) || extraIdempotency.includes(calleeName(c.expression)));
@@ -225,7 +232,7 @@ function checkoutFindings(src: SourceInfo, entry: Entry, extraRoots: readonly st
         severity: "high",
         file: path,
         line: l,
-        title: `Stripe ${op.target}.${op.method} uses an id from the request`,
+        title: `Stripe ${op.chain.links.map((link) => link.name).join(".")} uses an id from the request`,
         message: "Nothing ties the id to the signed-in user, so a caller can pass another customer's id and open their billing portal, read or cancel their subscription, or refund their payment.",
         evidence: lineText(sf, l),
         fix: "Resolve the customer from the authenticated user (a stripe_customer_id column looked up by session user id) and ignore any id in the request. If an id must be accepted, compare it to that stored value first.",

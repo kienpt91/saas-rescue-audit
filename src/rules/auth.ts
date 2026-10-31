@@ -112,7 +112,7 @@ function localDataOps(entry: Entry, src: SourceInfo, extraRoots: readonly string
 
 function entryLabel(entry: Entry): string {
   if (entry.kind === "route") return `${entry.name} handler`;
-  if (entry.kind === "action") return `server action ${entry.name}`;
+  if (entry.kind === "action") return `Server action ${entry.name}`;
   return "API handler";
 }
 
@@ -187,7 +187,7 @@ export const authRules: Rule = (ctx) => {
         line: declLine,
         title: `${entryLabel(entry)} ${writes ? "writes" : "reads"} data without an auth check`,
         message: `No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this ${entry.kind === "action" ? "server action" : "handler"}. ${entry.kind === "action" ? "Server actions are public POST endpoints regardless of where they are imported." : "Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate."}`,
-        evidence: `L${declLine}: ${lineText(src.sf, declLine)}\nL${opLine}: ${lineText(src.sf, opLine)}`,
+        evidence: declLine === opLine ? `L${declLine}: ${lineText(src.sf, declLine)}` : `L${declLine}: ${lineText(src.sf, declLine)}\nL${opLine}: ${lineText(src.sf, opLine)}`,
         fix: "Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
       });
     }

@@ -118,7 +118,7 @@ function collectEntries(sf: ts.SourceFile, info: Pick<SourceInfo, "isAppRoute" |
 
     if (ts.isFunctionDeclaration(stmt) && exported) {
       const name = isDefault ? "default" : (stmt.name?.text ?? "default");
-      if (info.isAppRoute && HTTP_METHODS[name]) add("route", name, stmt, stmt, []);
+      if (info.isAppRoute && HTTP_METHODS[name] === true) add("route", name, stmt, stmt, []);
       else if (info.isPagesApi && isDefault) add("pages-api", stmt.name?.text ?? "handler", stmt, stmt, []);
       else if (info.isAppPage && isDefault) add("page", stmt.name?.text ?? "default", stmt, stmt, []);
       else if (info.isServerActionFile) add("action", name, stmt, stmt, []);
@@ -128,7 +128,7 @@ function collectEntries(sf: ts.SourceFile, info: Pick<SourceInfo, "isAppRoute" |
         const resolved = resolveFunction(decl.initializer);
         if (!resolved) continue;
         const name = decl.name.text;
-        if (info.isAppRoute && HTTP_METHODS[name]) add("route", name, resolved.fn, decl, resolved.wrappers);
+        if (info.isAppRoute && HTTP_METHODS[name] === true) add("route", name, resolved.fn, decl, resolved.wrappers);
         else if (info.isServerActionFile) add("action", name, resolved.fn, decl, resolved.wrappers);
       }
     } else if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {

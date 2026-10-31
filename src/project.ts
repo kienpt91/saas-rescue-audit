@@ -43,7 +43,7 @@ export function collectProject(root: string, config: Pick<Config, "ignorePaths">
       const relPath = rel === "" ? entry.name : `${rel}/${entry.name}`;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
-        if (SKIP_DIRS[entry.name] || ignored(relPath)) continue;
+        if (SKIP_DIRS[entry.name] === true || ignored(relPath)) continue;
         walk(join(dir, entry.name), relPath);
       } else if (entry.isFile()) {
         if (ignored(relPath)) continue;
@@ -54,7 +54,7 @@ export function collectProject(root: string, config: Pick<Config, "ignorePaths">
           warnings.push(`${relPath}: skipped, larger than ${MAX_FILE_BYTES} bytes`);
           continue;
         }
-        files.set(relPath, readFileSync(abs, "utf8"));
+        files.set(relPath, readFileSync(abs, "utf8").replace(/^\uFEFF/, ""));
       }
     }
   };

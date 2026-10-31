@@ -23,7 +23,7 @@ function clauseText(label: string, expr: Token[] | null): string {
 
 function permissiveFinding(policy: PolicyInfo, table: TableInfo, hasOwnerColumn: boolean, ctx: AuditContext): RawFinding | null {
   if (!policy.permissive) return null;
-  if (policy.roles.every((r) => SERVICE_ROLES[r])) return null;
+  if (policy.roles.every((r) => SERVICE_ROLES[r] === true)) return null;
   const writes = WRITE_COMMANDS[policy.command] === true;
   const exposedToAnon = policy.roles.includes("anon") || policy.roles.includes("public");
   const who = policy.roles.includes("public") ? "every role including anon" : policy.roles.join(", ");
@@ -105,7 +105,7 @@ export const supabaseRules: Rule = (ctx) => {
       });
       continue;
     }
-    const policies = (policiesByTable.get(key) ?? []).filter((p) => !p.roles.every((r) => SERVICE_ROLES[r]));
+    const policies = (policiesByTable.get(key) ?? []).filter((p) => !p.roles.every((r) => SERVICE_ROLES[r] === true));
     if (policies.length === 0) {
       out.push({
         ...where,

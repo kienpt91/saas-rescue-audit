@@ -122,8 +122,8 @@ function classify(chain: Chain, roots: RegExp): DataOp | null {
     const method = links[links.length - 1]!.name;
     const resource = links[0]!.name;
     if (resource === "webhooks" || links.length < 2) return null;
-    if (STRIPE_WRITES[method]) return { kind: "write", node: terminal, chain, via: "stripe", target: resource, method };
-    if (STRIPE_READS[method]) return { kind: "read", node: terminal, chain, via: "stripe", target: resource, method };
+    if (STRIPE_WRITES[method] === true) return { kind: "write", node: terminal, chain, via: "stripe", target: resource, method };
+    if (STRIPE_READS[method] === true) return { kind: "read", node: terminal, chain, via: "stripe", target: resource, method };
     return null;
   }
 
@@ -134,8 +134,8 @@ function classify(chain: Chain, roots: RegExp): DataOp | null {
   let write: Link | undefined;
   let read: Link | undefined;
   for (const l of links) {
-    if (WRITE_METHODS[l.name] && !write) write = l;
-    else if (READ_METHODS[l.name] && !read) read = l;
+    if (WRITE_METHODS[l.name] === true && !write) write = l;
+    else if (READ_METHODS[l.name] === true && !read) read = l;
     else if (l.name === "rpc" && !write && !read) {
       if (RPC_WRITE.test(stringValue(l.args[0]) ?? "")) write = l;
       else read = l;
