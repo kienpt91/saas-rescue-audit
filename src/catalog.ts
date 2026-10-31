@@ -2,13 +2,13 @@ import type { RuleInfo } from "./types.js";
 
 export const RULES: readonly RuleInfo[] = [
   { id: "supabase-rls-missing", family: "supabase", severity: "high/critical", summary: "Table created in a public-schema migration without ENABLE ROW LEVEL SECURITY." },
-  { id: "supabase-policy-permissive", family: "supabase", severity: "medium-critical", summary: "Policy with USING (true) / WITH CHECK (true), or a write policy for the anon role." },
+  { id: "supabase-policy-permissive", family: "supabase", severity: "medium-critical", summary: "Policy whose USING or WITH CHECK is always true (true, 1 = 1, true or x, not false, ...), or a write policy for the anon role." },
   { id: "supabase-policy-missing", family: "supabase", severity: "medium", summary: "Table has row level security enabled but no policy for client roles." },
-  { id: "supabase-tenant-unscoped", family: "supabase", severity: "high", summary: "Table has an owner/tenant column that no policy references." },
+  { id: "supabase-tenant-unscoped", family: "supabase", severity: "high", summary: "Table has an owner/tenant column that no policy ties to the caller (auth.uid(), auth.jwt() or a membership function)." },
   { id: "secret-in-client", family: "secrets", severity: "critical/high", summary: "Server secret read in a client component, or a secret published through a NEXT_PUBLIC_ variable." },
   { id: "secret-committed-env", family: "secrets", severity: "high/critical", summary: ".env file that is tracked by git or not covered by .gitignore." },
   { id: "secret-hardcoded", family: "secrets", severity: "critical-medium", summary: "Key-shaped or high-entropy secret literal in source." },
-  { id: "stripe-webhook-unverified", family: "stripe", severity: "critical", summary: "Stripe webhook handler that never calls constructEvent." },
+  { id: "stripe-webhook-unverified", family: "stripe", severity: "critical", summary: "Stripe webhook handler with no reachable webhooks.constructEvent call (or verification helper named in authHelpers)." },
   { id: "stripe-webhook-parse-before-verify", family: "stripe", severity: "high", summary: "Request body parsed as JSON before the signature is verified." },
   { id: "stripe-webhook-no-idempotency", family: "stripe", severity: "medium", summary: "Verified webhook handler that never uses event.id to deduplicate." },
   { id: "stripe-webhook-unknown-event-error", family: "stripe", severity: "low", summary: "Unknown event types answered with an error status or an exception." },

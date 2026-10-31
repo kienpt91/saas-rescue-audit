@@ -15,14 +15,21 @@ export interface Finding {
   title: string;
   /** Why it matters. */
   message: string;
-  /** The offending source text (secrets are redacted). */
+  /** The offending source text, with credential-shaped substrings removed. */
   evidence: string;
   /** What to change. */
   fix: string;
 }
 
-/** A finding as produced by a rule: severity and evidence may be filled in by the engine. */
-export type RawFinding = Omit<Finding, "evidence"> & { evidence?: string };
+/** A finding as produced by a rule: evidence may be filled in by the engine. */
+export type RawFinding = Omit<Finding, "evidence"> & {
+  evidence?: string;
+  /** Set by a rule when the project's config already declares this finding intentional. */
+  suppressedBy?: string;
+};
+
+/** A finding that is not counted, and what silenced it. */
+export type SuppressedFinding = Finding & { suppressedBy: string };
 
 export interface RuleInfo {
   id: string;
@@ -40,8 +47,16 @@ export interface Project {
   paths: ReadonlySet<string>;
   /** Paths listed in `.git/index`, or null when the project root has no readable index. */
   gitTracked: ReadonlySet<string> | null;
-  /** Problems met while collecting (skipped large files, unreadable index). */
+  /** Problems met while collecting that do not reduce coverage. */
   warnings: string[];
+  /** Files, directories or whole parts of the project that were not read, as "path: reason". */
+  skipped: string[];
+  /** Directories skipped by name (dependencies, build output), as relative paths. */
+  skippedDirs: string[];
+  /** The first paths excluded by the config's ignorePaths. */
+  ignoredByConfig: string[];
+  /** How many paths ignorePaths excluded in all. */
+  ignoredByConfigCount: number;
 }
 
 export interface Config {
@@ -49,9 +64,9 @@ export interface Config {
   ignoreRules: string[];
   /** Globs of files and directories to skip. */
   ignorePaths: string[];
-  /** Extra function names recognised as an authentication check. */
+  /** Extra function names recognised as an authentication check (and as webhook signature verification). */
   authHelpers: string[];
-  /** Globs of route files that are intentionally public (api-route-no-auth is skipped). */
+  /** Globs of route files that are intentionally public (api-route-no-auth is reported as suppressed). */
   publicRoutes: string[];
   /** Extra column names that mark a row owner or tenant. */
   tenantColumns: string[];
@@ -65,10 +80,22 @@ export interface Config {
   rateLimiters: string[];
 }
 
+/** What shaped this run, printed in every report so a reader can see what was excluded. */
+export interface EffectiveConfig extends Config {
+  /** Config file the settings came from, or null when none was used. */
+  source: string | null;
+  /** Directories skipped by name. */
+  skippedDirs: string[];
+  /** Number of paths excluded by ignorePaths. */
+  ignoredPathCount: number;
+}
+
 export interface AuditResult {
   findings: Finding[];
-  suppressed: Finding[];
+  suppressed: SuppressedFinding[];
   warnings: string[];
+  /** Parts of the project that were not analysed. A non-empty list means the audit is incomplete. */
+  skipped: string[];
   stats: {
     filesScanned: number;
     sourceFiles: number;
@@ -81,4 +108,5 @@ export interface AuditResult {
   };
   /** Things the audit could not assess for this particular project. */
   notes: string[];
+  config: EffectiveConfig;
 }
