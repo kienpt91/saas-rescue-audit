@@ -43,6 +43,6 @@
     "vitest": "5.0.5"
   },
   "dependencies": {
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   }
 }
