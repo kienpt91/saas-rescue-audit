@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { detectKeyShape, redact, shannonEntropy } from "../src/rules/secrets.js";
+import { redact } from "../src/redact.js";
+import { detectKeyShape, shannonEntropy } from "../src/rules/secrets.js";
 import { base64url, fakeKey, keys, of, randomToken, run } from "./helpers.js";
 
 describe("secret-in-client: NEXT_PUBLIC_ names", () => {
@@ -95,8 +96,8 @@ describe("secret-hardcoded", () => {
 
   it("flags a database URL with a real password, not a placeholder", () => {
     const real = `postgres://app:${randomToken(16, 8)}@db.example.test:5432/app`;
-    expect(detectKeyShape(real)).toMatchObject({ severity: "high", secret: expect.stringMatching(/^[A-Za-z0-9]{16}$/) });
-    expect(detectKeyShape("postgres://app:[YOUR-PASSWORD]@db.example.test:5432/app")).toBeNull();
+    expect(detectKeyShape(real)).toMatchObject({ severity: "high", redacted: "[database password, 16 chars]" });
+    expect(JSON.stringify(detectKeyShape(real))).not.toContain(real.split(":")[2]!.split("@")[0]!);
     expect(detectKeyShape("postgresql://postgres:postgres@localhost:5432/dev")).toBeNull();
   });
 
@@ -171,7 +172,7 @@ describe("secret-committed-env", () => {
     expect(f).toHaveLength(1);
     expect(f[0]).toMatchObject({ severity: "critical" });
     expect(f[0]!.title).toContain("tracked by git");
-    expect(f[0]!.fix).toContain("git rm --cached .env.production");
+    expect(f[0]!.fix).toContain("git rm --cached -- '.env.production'");
   });
 
   it("with an index, an ignored and untracked file is fine, an unignored untracked one is not", () => {

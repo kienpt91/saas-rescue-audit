@@ -6,7 +6,9 @@ import { ConfigError, DEFAULT_CONFIG, parseConfig } from "../src/config.js";
 import { GitIgnore } from "../src/gitignore.js";
 import { parseGitIndex } from "../src/gitindex.js";
 import { compileGlobs } from "../src/glob.js";
-import { MAX_FILE_BYTES, collectProject } from "../src/project.js";
+import { GlobError } from "../src/glob.js";
+import { DEFAULT_LIMITS } from "../src/limits.js";
+import { collectProject } from "../src/project.js";
 import { applySuppressions, parseDirectives } from "../src/suppress.js";
 import type { Finding } from "../src/types.js";
 import { buildIndex } from "./git-index.js";
@@ -33,11 +35,10 @@ describe("globs", () => {
     expect(match("app/api/v1/a/b/route.ts")).toBe(false);
   });
 
-  it("bounds pathological patterns", () => {
-    const start = Date.now();
-    const match = compileGlobs(["*".repeat(5000) + "x"]);
-    match("a".repeat(2000));
-    expect(Date.now() - start).toBeLessThan(500);
+  it("rejects patterns that are too long or have too many wildcards instead of compiling them", () => {
+    expect(() => compileGlobs(["*".repeat(300)])).toThrow(GlobError);
+    expect(() => compileGlobs(["*a".repeat(20)])).toThrow(GlobError);
+    expect(() => compileGlobs(["*a".repeat(8)])).not.toThrow();
   });
 });
 
@@ -215,12 +216,12 @@ describe("project collection", () => {
     const root = tmp();
     const outside = tmp();
     writeFileSync(join(outside, "secret.ts"), "export const outside = 1;");
-    writeFileSync(join(root, "big.ts"), "a".repeat(MAX_FILE_BYTES + 1));
+    writeFileSync(join(root, "big.ts"), "a".repeat(DEFAULT_LIMITS.maxFileBytes + 1));
     symlinkSync(outside, join(root, "linked"));
     symlinkSync(join(outside, "secret.ts"), join(root, "linked.ts"));
     const p = collectProject(root, { ignorePaths: [] });
     expect(p.files.size).toBe(0);
-    expect(p.warnings).toEqual(["big.ts: skipped, larger than 1048576 bytes"]);
+    expect(p.skipped).toEqual(["big.ts: not read, larger than 1048576 bytes"]);
   });
 
   it("reads tracked paths from .git/index when it is present, and warns when it cannot", () => {

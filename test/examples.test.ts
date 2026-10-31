@@ -99,10 +99,14 @@ describe("examples/vibe-app-fixed", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("suppresses exactly two findings, each with a reason in the source", () => {
-    expect(result.suppressed.map((f) => `${f.rule}@${f.file}:${f.line}`).sort()).toEqual(["supabase-policy-missing@supabase/migrations/0001_init.sql:43", "supabase-policy-permissive@supabase/migrations/0002_rls.sql:53"]);
+  it("does not count three findings: two silenced by inline comments with a reason, one by the config", () => {
+    expect(result.suppressed.map((f) => `${f.rule}@${f.file}:${f.line} (${f.suppressedBy})`).sort()).toEqual([
+      "deps-unpinned@package.json:1 (config ignoreRules)",
+      "supabase-policy-missing@supabase/migrations/0001_init.sql:43 (inline comment)",
+      "supabase-policy-permissive@supabase/migrations/0002_rls.sql:53 (inline comment)",
+    ]);
     const root = dir("vibe-app-fixed");
-    for (const f of result.suppressed) {
+    for (const f of result.suppressed.filter((s) => s.suppressedBy === "inline comment")) {
       const lines = readFileSync(`${root}/${f.file}`, "utf8").split("\n");
       expect(lines[f.line - 2]).toMatch(/saas-audit-ignore-next-line \S+ -- \S+/);
     }
