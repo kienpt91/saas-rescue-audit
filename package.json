@@ -1,0 +1,48 @@
+{
+  "name": "saas-rescue-audit",
+  "version": "0.1.0",
+  "description": "Deterministic static auditor for Next.js, Supabase and Stripe codebases: RLS, secrets, webhooks, auth gaps and unsafe patterns, reported with file, line, evidence and fix.",
+  "keywords": [
+    "nextjs",
+    "supabase",
+    "stripe",
+    "row-level-security",
+    "static-analysis",
+    "security-audit",
+    "coding-agents"
+  ],
+  "license": "MIT",
+  "author": "Kien Phan",
+  "type": "module",
+  "bin": {
+    "saas-audit": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "sample": "npm run build && node dist/cli.js examples/vibe-app --markdown --output examples/sample-report.md"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "vitest": "5.0.5"
+  },
+  "dependencies": {
+    "typescript": "6.0.3"
+  }
+}
