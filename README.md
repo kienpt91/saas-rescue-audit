@@ -24,20 +24,22 @@ CRITICAL secret-in-client  .env.local:3
 
 ## Run it in a container
 
-Nothing here needs to be installed on your machine. These commands use the official Node image; the project is not published to a registry.
+Nothing here needs to be installed on your machine. These commands use the official Node image, pinned by digest (Node 22.22; the `node:22` tag moves, so re-pin when you update). The project is not published to a registry.
 
 ```sh
+IMAGE=node@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+
 # 1. install exactly what the lockfile says (no install scripts) and compile
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work node:22 \
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work $IMAGE \
   sh -c 'npm ci --ignore-scripts && npm run build'
 
 # 2. audit a directory: both mounts are read-only and the container has no network
 docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD":/work:ro -v /path/to/your/app:/audit:ro -w /work node:22 \
+  -v "$PWD":/work:ro -v /path/to/your/app:/audit:ro -w /work $IMAGE \
   node dist/cli.js /audit
 ```
 
-Add `--json` or `--markdown` for the other formats, and `--output <file>` to write a file (the output directory then has to be mounted writable). The exit code is 0 when nothing at or above `--fail-on` (default `low`) was found, 1 when something was, and 2 for a usage or config error, so it can gate a CI job.
+Add `--json` or `--markdown` for the other formats, and `--output <file>` to write a file (the output directory then has to be mounted writable).
 
 ```
 saas-audit [dir] [options]
@@ -47,9 +49,12 @@ saas-audit [dir] [options]
   --config <file>         config file (default: <dir>/saas-audit.config.json)
   --min-severity <level>  hide findings below critical|high|medium|low|info
   --fail-on <level|none>  exit 1 at or above this level (default: low)
+  --allow-incomplete      do not use exit code 3 when files were skipped or could not be analysed
   --date <YYYY-MM-DD>     print a date in the Markdown header (off by default, so output is reproducible)
   --no-color, --list-rules, --help, --version
 ```
+
+Exit codes, so it can gate a CI job: `0` nothing at or above `--fail-on` (default `low`) and the audit is complete; `1` findings; `2` usage, input or internal error; `3` the audit is **incomplete** (a file was skipped because of a limit or could not be read) and there are no findings to report. A skipped file is never a silent pass: it is listed under "Not analysed" in every format, `--json` has `"complete": false`, and the exit code is non-zero unless you pass `--allow-incomplete`.
 
 ## What it checks
 
@@ -58,13 +63,13 @@ Twenty-two rules in six families. Each one has positive and negative tests in `t
 | Family | Rule | What it reports |
 | --- | --- | --- |
 | Supabase RLS | `supabase-rls-missing` | A table created in a public-schema migration that never gets `ENABLE ROW LEVEL SECURITY` (critical when it has an owner column, otherwise high). |
-| | `supabase-policy-permissive` | `USING (true)` / `WITH CHECK (true)` on a policy for client roles; any write policy that names the `anon` role. |
+| | `supabase-policy-permissive` | A policy whose `USING` or `WITH CHECK` is always true (`true`, `1 = 1`, `true or x`, `not false`, `'x' = 'x'`, ...); any write policy that names the `anon` role; a policy too deeply nested to fold. |
 | | `supabase-policy-missing` | RLS is on but no policy exists for client roles. |
-| | `supabase-tenant-unscoped` | The table has an owner or tenant column (`user_id`, `org_id`, ..., or any column that references `auth.users`) and no policy mentions it. |
+| | `supabase-tenant-unscoped` | The table has an owner or tenant column (`user_id`, `org_id`, ..., or any column that references `auth.users`) and no policy ties it to the caller: compares it with `auth.uid()`/`auth.jwt()`/`current_setting()` or passes it to a function such as `is_member(org_id)`. Merely mentioning it (`user_id is not null`) does not count. |
 | Secrets | `secret-in-client` | A server secret read in a `"use client"` file; a `NEXT_PUBLIC_*` name that contains `SERVICE_ROLE`, `SECRET`, `PRIVATE`, `PASSWORD`, ... in code, `.env` files or the `next.config` `env` block. |
 | | `secret-committed-env` | An `.env*` file that is in the git index or not covered by `.gitignore`. |
-| | `secret-hardcoded` | Known key shapes (Stripe, AWS, GitHub, Slack, JWTs with `role: service_role`, private key blocks, database URLs with passwords) and high-entropy literals assigned to secret-looking names. Values are redacted in the report. |
-| Stripe | `stripe-webhook-unverified` | A webhook handler that never calls `constructEvent`. |
+| | `secret-hardcoded` | Known key shapes (Stripe, AWS, GitHub, Slack, JWTs with `role: service_role`, private key blocks, database URLs with passwords) and high-entropy literals assigned to secret-looking names. |
+| Stripe | `stripe-webhook-unverified` | A webhook handler with no reachable `<x>.webhooks.constructEvent` call (or `constructEventAsync`, or a helper named in `authHelpers`). A function that merely has that name, one that is never called, and a call inside `if (false)` do not count. |
 | | `stripe-webhook-parse-before-verify` | The body is parsed as JSON (or re-serialised) before verification, or `req.body` is used without `bodyParser: false`. |
 | | `stripe-webhook-no-idempotency` | A verified handler that never reads `event.id`. |
 | | `stripe-webhook-unknown-event-error` | The `default` branch or final `else` for event types returns a 4xx/5xx or throws. |
@@ -73,7 +78,7 @@ Twenty-two rules in six families. Each one has positive and negative tests in `t
 | Auth | `api-route-no-auth` | A route handler, Pages API handler or server action that reads or writes data and calls no recognised auth helper. |
 | | `api-idor` | A record selected by an id from `params`/body/query with no ownership filter; an owner column set from client input. |
 | Injection | `unsafe-html` | `dangerouslySetInnerHTML`, `innerHTML`, `insertAdjacentHTML`, `document.write` with non-constant input and no recognised sanitizer. |
-| | `open-redirect` | `redirect()`, `NextResponse.redirect()`, `res.redirect()`, `router.push()` or `location` assignment with a target that comes from the request and is not validated. |
+| | `open-redirect` | `redirect()`, `NextResponse.redirect()`, `res.redirect()`, `router.push()` or `location` assignment with a target that comes from the request and is not validated before the redirect (a check whose result is not used as a condition, or that comes after the redirect, does not count). |
 | Config | `cors-wildcard-credentials` | `Access-Control-Allow-Origin` as `*` or a reflected origin together with credentials. |
 | | `no-rate-limit` | (info) An auth or webhook route with no recognisable rate limiting. |
 | | `build-checks-disabled` | `typescript.ignoreBuildErrors` or `eslint.ignoreDuringBuilds` set to `true`. |
@@ -86,7 +91,7 @@ How it works, briefly:
 
 - **TypeScript and TSX** are parsed with the TypeScript compiler API (`typescript` is the only runtime dependency). Route handlers (`app/**/route.ts`, `pages/api/**`), server actions (`"use server"` files and inline directives) and client components (`"use client"`) are recognised from the AST and the file path.
 - **Taint** is tracked inside one function: parameters of an entry point, `request.json()`, `searchParams.get()`, `params`, `FormData` and values derived from them are "client-controlled". A lookup through a map or any function that is not on a short pass-through list (`Number`, `parse`, `new URL`, ...) ends the taint, which is how `PRICES[body.plan]` or `safeNextPath(next)` are accepted.
-- **SQL** migrations (`supabase/migrations/*.sql`, `supabase/schema.sql`) go through a small tokenizer of my own that handles comments, quoted identifiers, `E''` strings and dollar quoting, and a statement model for `CREATE/ALTER/DROP TABLE`, `ROW LEVEL SECURITY` and `CREATE/ALTER/DROP POLICY`, applied in file-name order.
+- **SQL** migrations (`supabase/migrations/*.sql`, `supabase/schema.sql`) go through a small tokenizer of my own that handles comments, quoted identifiers, `E''` strings and dollar quoting, and a statement model for `CREATE/ALTER/DROP TABLE`, `ROW LEVEL SECURITY` and `CREATE/ALTER/DROP POLICY`, applied in file-name order. Identifiers follow PostgreSQL: unquoted names fold to lower case, quoted names keep their case. Policy expressions are folded as boolean constants.
 - **Git state** is read from `.gitignore` files and, when the project root contains a `.git/index` in format 2 or 3, from the list of tracked paths. `git` is never executed.
 
 ## What it does not check
@@ -95,25 +100,36 @@ This is not a penetration test, not a vulnerability scanner and not a substitute
 
 - **Anything that runs.** Nothing is executed, no request is sent and no database is queried. RLS is judged from the SQL in your migrations, not from the policies that are live. Policies and tables made in the Supabase dashboard are invisible; with no migrations the tool says so instead of reporting nothing.
 - **Anything configured outside the repository:** Supabase auth settings and redirect allow-lists, storage bucket policies, Stripe dashboard and webhook endpoints, hosting environment variables, DNS, CDN, WAF.
-- **Database objects other than tables and policies:** views (`security_invoker`), `SECURITY DEFINER` functions, grants, triggers, realtime publications. `ALTER TABLE ... RENAME` is not followed.
-- **Whether an auth check is correct.** A call to a recognised helper name (`getUser`, `getSession`, `auth`, `requireUser`, `withAuth`, ... plus your `authHelpers`) anywhere in the handler counts, and so does a function in the same file that calls one. Order, branches, the result being ignored and role or plan checks are not evaluated. Reading an `Authorization` header or a `*-secret` header also counts. Middleware-only protection is not credited: mark such routes in `publicRoutes` or suppress the finding.
+- **Database objects other than tables and policies:** views (`security_invoker`), `SECURITY DEFINER` functions, grants, triggers, realtime publications. `ALTER TABLE ... RENAME` is not followed. Policies or RLS statements inside `DO` blocks, functions or `EXECUTE` are not interpreted (a warning says where they are).
+- **Whether an auth check is correct.** A call to a recognised helper name (`getUser`, `getSession`, `auth`, `requireUser`, `withAuth`, ... plus your `authHelpers`) anywhere in the handler counts, and so does a function in the same file that calls one. Order, branches, the result being ignored and role or plan checks are not evaluated. Reading an `Authorization` header or a `*-secret` header also counts. The same trust in names applies to `authHelpers` as webhook verifiers, sanitizers and rate limiters you name in the config. Middleware-only protection is not credited: mark such routes in `publicRoutes` or suppress the finding.
 - **Data flow across files.** An imported helper is a black box: its result is treated as server-controlled, and database access inside an imported helper is not seen (one level of same-file helpers is followed).
 - **Dependency vulnerabilities.** There is no advisory database. Run `npm audit`.
-- **Secrets in git history or in files with other extensions**, only the current tree is scanned. Only `.ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts`, `.sql`, `.env*`, `.gitignore` and `package.json` are read. CommonJS `module.exports` handlers and non-Next.js frameworks are not recognised.
+- **Secrets in git history or in files with other extensions**, only the current tree is scanned. A secret split across string concatenations or assembled at run time is not recognised. Only `.ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts`, `.sql`, `.env*`, `.gitignore` and `package.json` are read. CommonJS `module.exports` handlers and non-Next.js frameworks are not recognised.
 - **Everything not in the rule table**: denial of service, business-logic flaws, injection into SQL strings built by hand, SSRF, file upload handling, session fixation, privacy and legal questions.
 
-Expect both false positives (a public table flagged for `USING (true)`, a custom auth wrapper under an unknown name) and false negatives. Findings that are intentional are handled with the config file or suppression comments, and suppressed findings stay visible in the JSON and Markdown output.
+Expect both false positives (a public table flagged for an always-true policy, a custom auth wrapper under an unknown name) and false negatives. Findings that are intentional are handled with the config file or suppression comments; both stay visible in the reports (see below).
+
+## Auditing a repository you do not trust
+
+The auditor is meant to be pointed at code that arrives from someone else, so it treats everything in the project directory as hostile input. It never executes project code or `git`, never uses the network, and:
+
+- **Reads only regular files, without following symlinks.** Files are opened with `O_NOFOLLOW` and `O_NONBLOCK` and checked on the open descriptor, so a FIFO, a device or a symlink swapped in after the directory listing cannot hang or redirect the run. The config file found in the audited directory gets the same treatment (a symlink there is refused, not read). A path you pass with `--config` is your own choice and may be a symlink. A `.git` that is a symlink or a file is not trusted.
+- **Bounds work.** Limits: 1 MiB per file, 20 000 files and 64 MiB in total, 64 directory levels, a syntax tree no deeper than 1 000 levels, 10 s per file and rule and 120 s overall. Glob patterns (config and `.gitignore`) are matched without regular expressions and are limited to 256 characters and 16 wildcards; the secret-shape patterns have bounded quantifiers. Measured before and after the hardening, on inputs built to be worst cases: a 128 KiB string of repeated `postgres://x:` went from 1 044 ms to 6 ms and a `-eyJ…` string from 1 395 ms to 5 ms; a 40 000-deep parenthesised policy from 4 113 ms to 2 ms; a 30-character name against a glob with 17 wildcards from 13 393 ms (patterns with more than 16 wildcards are now rejected, and the largest one still allowed takes under 1 ms); 2 000 exported server actions in one file from 10 972 ms to 119 ms; 20 000 policies in one migration from 17 552 ms to 120 ms; a line with 80 000 spaces in an `.env` file from 8 862 ms to under 1 ms. Deeply nested code (`((((…))))`, long `a+a+a…` chains) used to crash the run with a stack overflow; it is now skipped with a message.
+- **Reports what it did not cover.** A file that is too large, unreadable, too deep, out of time or beyond the file limits is listed under "Not analysed", and the exit code is 3 (see above). Directories skipped by name, paths excluded by `ignorePaths`, rules switched off by `ignoreRules`, routes marked in `publicRoutes` and extra helper names from the config are printed in every format under "Configuration in effect", and the findings they silenced are listed under "not counted" with what silenced them. `node_modules`, `.git`, `.next`, `.turbo`, `.vercel` and `.cache` are skipped at any depth; `dist`, `build`, `out` and `coverage` only next to a `package.json`, so a route segment called `build` is still audited.
+- **Does not repeat secrets.** Evidence is the source line with credential-shaped substrings removed before it is cut to length (`sk_l…[36 chars]`, `[private key block, 118 chars]`, `[database password, 16 chars]`, `[JWT withheld]`). Evidence for a hard-coded secret is built from the match, not from the line. A line whose secret is only visible after decoding `\x…`/`\u…` escapes is withheld as a whole. Only the vendor prefix of a key with one (four characters) is ever shown. A secret the patterns do not recognise is not removed from the line of another finding.
+- **Does not let repository text act on your terminal or your documents.** File names, policy names, source lines, the package name and warnings come from the repository. In the terminal report every control character, escape sequence, bidirectional override and zero-width character becomes a visible escape (`\x1b`, `\u{202e}`). In the Markdown report the same text is escaped so that backticks, pipes, brackets, HTML, links, `@mentions`, `$` math and newlines cannot form markup; locations are code spans with delimiters longer than any backtick run inside, and evidence fences are longer than any backtick run in the evidence. The JSON report keeps the text exactly as found (JSON escapes control characters itself), so a program that renders it has to sanitize it for its own output.
+- **Quotes suggested shell commands.** The `git rm --cached` and `npm install` hints put names through POSIX quoting.
 
 ## Configuration
 
-`saas-audit.config.json` in the audited directory (or `--config`). It is plain JSON, validated strictly, and cannot load code.
+`saas-audit.config.json` in the audited directory (or `--config`). It is plain JSON, validated strictly, and cannot load code. Because it ships with the repository you are auditing, treat a config that comes from the repository as part of what you are reviewing: what it excludes is printed at the top of every report.
 
 | Key | Meaning |
 | --- | --- |
-| `ignoreRules` | Rule ids to switch off. |
-| `ignorePaths` | Globs of files or directories to skip (`**/*.test.ts`, `scripts`). |
-| `authHelpers` | Extra function names that count as an auth check. |
-| `publicRoutes` | Globs of route files that are public on purpose (skips `api-route-no-auth`). |
+| `ignoreRules` | Rule ids to switch off. Their findings are listed as not counted. |
+| `ignorePaths` | Globs of files or directories to skip (`**/*.test.ts`, `scripts`). The number of paths excluded is reported. |
+| `authHelpers` | Extra function names that count as an auth check, and as webhook signature verification. |
+| `publicRoutes` | Globs of route files that are public on purpose (`api-route-no-auth` is listed as not counted). |
 | `tenantColumns` | Extra column names that mark a row owner or tenant. |
 | `sanitizers` | Extra function names that count as HTML sanitizers. |
 | `dataAccessRoots` | Extra identifiers that are database clients. |
@@ -132,16 +148,16 @@ export async function GET() { ... }
 create policy "plans are public" on public.plans for select to anon using (true);
 ```
 
-`saas-audit-ignore-line <rule>` covers the same line and `saas-audit-ignore-file <rule>` the whole file; `all` matches every rule. Unknown rule names and directives that suppress nothing are reported as warnings so stale comments get removed.
+`saas-audit-ignore-line <rule>` covers the same line and `saas-audit-ignore-file <rule>` the whole file; `all` matches every rule. Unknown rule names and directives that suppress nothing are reported as warnings so stale comments get removed. Every finding silenced by a comment or by the config is listed in the terminal, Markdown and JSON reports with what silenced it.
 
 ## Examples
 
 - [`examples/vibe-app/`](examples/vibe-app) is a deliberately flawed Next.js + Supabase + Stripe app: dashboard-created tables, "make the error go away" policies, one all-powerful client, a webhook that parses before it verifies, a client-supplied checkout amount. Files only: it is not installed or run, and it has no lockfile.
   Its `.env.local` is committed on purpose, with placeholder values, so the tool has something to find.
-- [`examples/vibe-app-fixed/`](examples/vibe-app-fixed) is the same app after the fixes the findings point at. It audits with no findings and two suppressed ones, each with a reason in the source. Its `saas-audit.config.json` switches off `deps-unpinned` because the example ships no lockfile.
+- [`examples/vibe-app-fixed/`](examples/vibe-app-fixed) is the same app after the fixes the findings point at. It audits with no findings and three not counted: two silenced by inline comments with a reason, one by its `saas-audit.config.json`, which switches off `deps-unpinned` because the example ships no lockfile.
 - [`examples/sample-report.md`](examples/sample-report.md) is `saas-audit examples/vibe-app --markdown` verbatim: summary table by severity, findings with evidence and fix, a "what was not checked" section.
 
-`test/examples.test.ts` asserts the exact set of 34 findings (rule, file and line) for the flawed app, that the fixed app is clean with exactly the two suppressions, and that the sample report is byte-for-byte what the CLI prints. Regenerate it with `npm run sample`.
+`test/examples.test.ts` asserts the exact set of 34 findings (rule, file and line) for the flawed app, that the fixed app is clean with exactly those three not counted, and that the sample report is byte-for-byte what the CLI prints. Regenerate it with `npm run sample`.
 
 ## How I would approach rescuing an AI-built SaaS
 
@@ -158,11 +174,12 @@ This is the method I would follow, and the order the tool is built around. It is
 Everything runs in a container; the repository has no install step on the host.
 
 ```sh
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work node:22 \
+IMAGE=node@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work $IMAGE \
   sh -c 'npm ci --ignore-scripts && npm run typecheck && npm test && npm run build'
 ```
 
-Requires Node 22.12 or newer (CI runs 22 and 24). The test suite has no network or API-key dependency. Fixtures that look like credentials are assembled from parts at run time, so the repository contains no secret-shaped literal; the example apps use obviously fake placeholders.
+Requires Node 22.12 or newer (CI runs 22 and 24). The test suite has no network or API-key dependency. Fixtures that look like credentials, and every hostile fixture (escape sequences in file names, backtick-laden evidence, symlinks to `/dev/zero`, FIFOs, deeply nested code, worst-case glob and regex inputs), are built at run time, so the repository contains no secret-shaped literal; the example apps use obviously fake placeholders.
 
 Dependencies are pinned exactly and installed with `--ignore-scripts` and a publish-date cutoff; see [SECURITY.md](SECURITY.md) for the dependency policy, the trust model and the reporting address.
 
