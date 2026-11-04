@@ -139,11 +139,29 @@ describe("linear-time secret and SQL scans", () => {
     expect(ms(() => run({ "supabase/migrations/001.sql": sql }))).toBeLessThan(3000);
   });
 
-  it("handles a server-action file with thousands of exports without quadratic cost", () => {
-    const body = Array.from({ length: 3000 }, (_, i) => `export async function a${i}(id: string) { await supabase.from("t").delete().eq("id", id); }`).join("\n");
-    const r = run({ "app/actions.ts": `"use server";\n${body}\n` });
-    expect(r.findings.length).toBe(6000);
-    expect(ms(() => run({ "app/actions.ts": `"use server";\n${body}\n` }))).toBeLessThan(5000);
+  // Auditing is linear (best-of-6 CPU time about 0.2 ms per action: 1000 to 16 000 actions doubled the time with each doubling),
+  // so 3000 actions take under a second of CPU. A wall-clock cap of 5 s failed on a shared CI runner that was several times slower than
+  // that, which says nothing about the tool. Quadratic work is caught by comparing CPU time for N and 4N actions instead
+  // (linear: about 4x, quadratic: about 16x), and the test timeout is generous so a busy runner cannot fail it.
+  it("handles a server-action file with thousands of exports without quadratic cost", { timeout: 60_000 }, () => {
+    const files = (n: number) => ({
+      "app/actions.ts": `"use server";\n${Array.from({ length: n }, (_, i) => `export async function a${i}(id: string) { await supabase.from("t").delete().eq("id", id); }`).join("\n")}\n`,
+    });
+    const cpu = (n: number) => {
+      const input = files(n);
+      let best = Infinity;
+      for (let i = 0; i < 2; i++) {
+        const before = process.cpuUsage();
+        run(input);
+        const used = process.cpuUsage(before);
+        best = Math.min(best, used.user + used.system);
+      }
+      return best;
+    };
+    expect(run(files(3000)).findings.length).toBe(6000);
+    const small = cpu(600);
+    const large = cpu(2400);
+    expect(large / Math.max(small, 1)).toBeLessThan(10);
   });
 
   it("does not turn a very long member chain into quadratic work", () => {
