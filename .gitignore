@@ -3,6 +3,7 @@
 *.log
 .DS_Store
 coverage/
+/out/
 
 # Secret-like files: never commit these. Use .env.example for documented placeholders.
 .env
