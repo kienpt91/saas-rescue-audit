@@ -50,19 +50,51 @@ function cli(args: string[], cwd = tmpdir()): CliResult {
   return { code: runCli(args, io), out, err };
 }
 
-/** Wall-clock milliseconds taken by `fn`. */
-function ms(fn: () => unknown): number {
-  const start = performance.now();
-  fn();
-  return performance.now() - start;
+/** An 8x larger input may cost at most this many times the CPU time of the small one: linear is about 8, quadratic about 64. */
+const MAX_GROWTH = 24;
+
+/**
+ * CPU microseconds of the calling thread. Not the whole process: V8's parallel garbage-collector threads spin while waiting when the
+ * machine is oversubscribed, which inflates process-wide CPU time for allocation-heavy (larger) inputs and has nothing to do with the code.
+ */
+function threadCpuMicros(): number {
+  const used = typeof process.threadCpuUsage === "function" ? process.threadCpuUsage() : process.cpuUsage();
+  return used.user + used.system;
+}
+
+/** CPU milliseconds used by `fn`; the best of five runs, so a busy machine does not inflate it. */
+function cpuMs(fn: () => unknown): number {
+  let best = Infinity;
+  for (let i = 0; i < 5; i++) {
+    const before = threadCpuMicros();
+    fn();
+    best = Math.min(best, (threadCpuMicros() - before) / 1000);
+  }
+  return best;
+}
+
+/**
+ * CPU time of `fn` on `make(8 * n)` divided by its CPU time on `make(n)`. Unlike a wall-clock cap this does not depend on how fast or
+ * busy the machine is. The small time is floored at 10 ms so timer granularity and one-off hiccups cannot inflate the ratio.
+ */
+function growth<T>(make: (size: number) => T, n: number, fn: (input: T) => unknown): number {
+  const small = make(n);
+  const large = make(8 * n);
+  fn(small);
+  return cpuMs(() => fn(large)) / Math.max(cpuMs(() => fn(small)), 10);
 }
 
 describe("glob patterns from the repository", () => {
-  it("matches the worst allowed patterns in well under a second", () => {
+  it("matches the worst allowed patterns in well under a second", { timeout: 60_000 }, () => {
     const worst = compileGlobs(["*a".repeat(15) + "*b"]);
-    expect(ms(() => worst("a".repeat(250) + ".ts"))).toBeLessThan(500);
+    const many = (match: (path: string) => boolean, path: string) => {
+      for (let i = 0; i < 200; i++) match(path);
+    };
+    expect(worst("a".repeat(250) + ".ts")).toBe(false);
+    expect(growth((n) => "a".repeat(n) + ".ts", 31, (path) => many(worst, path))).toBeLessThan(MAX_GROWTH);
     const stacked = compileGlobs(["**/".repeat(16) + "x"]);
-    expect(ms(() => stacked(Array(300).fill("d").join("/") + "/y"))).toBeLessThan(500);
+    expect(stacked(Array(300).fill("d").join("/") + "/y")).toBe(false);
+    expect(growth((n) => Array(n).fill("d").join("/") + "/y", 38, (path) => many(stacked, path))).toBeLessThan(MAX_GROWTH);
   });
 
   it("rejects what could blow up instead of compiling it", () => {
@@ -100,19 +132,16 @@ describe("glob patterns from the repository", () => {
     expect(ig.isIgnored(`f${MAX_RULES + 5}.txt`)).toBe(false);
   });
 
-  it("does not stall on a .gitignore or .env line made of whitespace", () => {
-    const spaces = " ".repeat(200_000);
-    const t = ms(() => run({ ".env.local": `A_SECRET=x${spaces}y\n`, ".gitignore": `foo${spaces}x\n` }));
-    expect(t).toBeLessThan(1500);
+  it("does not stall on a .gitignore or .env line made of whitespace", { timeout: 60_000 }, () => {
+    const files = (n: number) => ({ ".env.local": `A_SECRET=x${" ".repeat(n)}y\n`, ".gitignore": `foo${" ".repeat(n)}x\n` });
+    expect(growth(files, 50_000, (f) => run(f))).toBeLessThan(MAX_GROWTH);
   });
 });
 
 describe("linear-time secret and SQL scans", () => {
-  it("scans repeated database-URL and JWT prefixes in linear time", () => {
-    const urls = "postgres://x:".repeat(10_000);
-    const jwts = "-eyJaaaaaaaa".repeat(11_000);
-    expect(ms(() => detectKeyShape(urls))).toBeLessThan(500);
-    expect(ms(() => detectKeyShape(jwts))).toBeLessThan(500);
+  it("scans repeated database-URL and JWT prefixes in linear time", { timeout: 60_000 }, () => {
+    expect(growth((n) => "postgres://x:".repeat(n), 2500, (s) => detectKeyShape(s))).toBeLessThan(MAX_GROWTH);
+    expect(growth((n) => "-eyJaaaaaaaa".repeat(n), 2750, (s) => detectKeyShape(s))).toBeLessThan(MAX_GROWTH);
   });
 
   it("still finds a database URL and a service-role JWT inside long strings", () => {
@@ -122,51 +151,40 @@ describe("linear-time secret and SQL scans", () => {
     expect(detectKeyShape(`${pad}${jwt}`)).toMatchObject({ severity: "critical" });
   });
 
-  it("folds a 100 000-deep parenthesised policy expression in linear time", () => {
-    const toks = tokenize("(".repeat(100_000) + "true" + ")".repeat(100_000));
-    expect(ms(() => expect(foldConstant(toks)).toBe("true"))).toBeLessThan(500);
+  it("folds a 100 000-deep parenthesised policy expression in linear time", { timeout: 60_000 }, () => {
+    const toks = (n: number) => tokenize("(".repeat(n) + "true" + ")".repeat(n));
+    expect(foldConstant(toks(100_000))).toBe("true");
+    expect(growth(toks, 25_000, (t) => foldConstant(t))).toBeLessThan(MAX_GROWTH);
   });
 
-  it("handles a migration with 20 000 policies and 8 000 findings in one file without quadratic cost", () => {
-    const sql = "create table public.t (id int, user_id uuid);\nalter table public.t enable row level security;\n" + Array.from({ length: 20_000 }, (_, i) => `create policy p${i} on public.t for select to authenticated using (auth.uid() = user_id);`).join("\n");
-    expect(ms(() => run({ "supabase/migrations/001.sql": sql }))).toBeLessThan(3000);
-    const tables = Array.from({ length: 8000 }, (_, i) => `create table public.t${i} (id int);`).join("\n");
-    expect(ms(() => expect(run({ "supabase/migrations/001.sql": tables }).findings).toHaveLength(8000))).toBeLessThan(3000);
+  it("handles a migration with 20 000 policies and 8 000 findings in one file without quadratic cost", { timeout: 60_000 }, () => {
+    const sql = (n: number) => "create table public.t (id int, user_id uuid);\nalter table public.t enable row level security;\n" + Array.from({ length: n }, (_, i) => `create policy p${i} on public.t for select to authenticated using (auth.uid() = user_id);`).join("\n");
+    expect(growth((n) => ({ "supabase/migrations/001.sql": sql(n) }), 5000, (f) => run(f))).toBeLessThan(MAX_GROWTH);
+    const tables = (n: number) => Array.from({ length: n }, (_, i) => `create table public.t${i} (id int);`).join("\n");
+    expect(run({ "supabase/migrations/001.sql": tables(8000) }).findings).toHaveLength(8000);
+    expect(growth((n) => ({ "supabase/migrations/001.sql": tables(n) }), 4000, (f) => run(f))).toBeLessThan(MAX_GROWTH);
   });
 
-  it("applies create/drop policy pairs in constant time each", () => {
-    const sql = "create table public.t (id int);\nalter table public.t enable row level security;\n" + Array.from({ length: 30_000 }, (_, i) => `create policy p${i} on public.t using (true);\ndrop policy p${i} on public.t;`).join("\n");
-    expect(ms(() => run({ "supabase/migrations/001.sql": sql }))).toBeLessThan(3000);
+  it("applies create/drop policy pairs in constant time each", { timeout: 60_000 }, () => {
+    const sql = (n: number) => "create table public.t (id int);\nalter table public.t enable row level security;\n" + Array.from({ length: n }, (_, i) => `create policy p${i} on public.t using (true);\ndrop policy p${i} on public.t;`).join("\n");
+    expect(growth((n) => ({ "supabase/migrations/001.sql": sql(n) }), 3750, (f) => run(f))).toBeLessThan(MAX_GROWTH);
   });
 
   // Auditing is linear (best-of-6 CPU time about 0.2 ms per action: 1000 to 16 000 actions doubled the time with each doubling),
   // so 3000 actions take under a second of CPU. A wall-clock cap of 5 s failed on a shared CI runner that was several times slower than
-  // that, which says nothing about the tool. Quadratic work is caught by comparing CPU time for N and 4N actions instead
-  // (linear: about 4x, quadratic: about 16x), and the test timeout is generous so a busy runner cannot fail it.
+  // that, which says nothing about the tool. Quadratic work is caught by comparing CPU time for N and 8N actions instead
+  // (linear: about 8x, quadratic: about 64x), and the test timeout is generous so a busy runner cannot fail it.
   it("handles a server-action file with thousands of exports without quadratic cost", { timeout: 60_000 }, () => {
     const files = (n: number) => ({
       "app/actions.ts": `"use server";\n${Array.from({ length: n }, (_, i) => `export async function a${i}(id: string) { await supabase.from("t").delete().eq("id", id); }`).join("\n")}\n`,
     });
-    const cpu = (n: number) => {
-      const input = files(n);
-      let best = Infinity;
-      for (let i = 0; i < 2; i++) {
-        const before = process.cpuUsage();
-        run(input);
-        const used = process.cpuUsage(before);
-        best = Math.min(best, used.user + used.system);
-      }
-      return best;
-    };
     expect(run(files(3000)).findings.length).toBe(6000);
-    const small = cpu(600);
-    const large = cpu(2400);
-    expect(large / Math.max(small, 1)).toBeLessThan(10);
+    expect(growth(files, 300, (f) => run(f))).toBeLessThan(MAX_GROWTH);
   });
 
-  it("does not turn a very long member chain into quadratic work", () => {
-    const text = `export async function GET(req: Request) { const x = req${".search".repeat(900)}; return Response.json(x); }\n`;
-    expect(ms(() => run({ "app/api/a/route.ts": text }))).toBeLessThan(1000);
+  it("does not turn a very long member chain into quadratic work", { timeout: 60_000 }, () => {
+    const text = (n: number) => `export async function GET(req: Request) { const x = req${".search".repeat(n)}; return Response.json(x); }\n`;
+    expect(growth((n) => ({ "app/api/a/route.ts": text(n) }), 112, (f) => run(f))).toBeLessThan(MAX_GROWTH);
   });
 });
 
@@ -237,24 +255,21 @@ describe("time budgets", () => {
 });
 
 describe("reading a hostile directory tree", () => {
-  it("skips an oversize file, a symlink and a FIFO without reading or blocking on them", () => {
+  it("skips an oversize file, a symlink and a FIFO without reading or blocking on them", { timeout: 20_000 }, () => {
     const root = project({ "ok.ts": "export const a = 1;" });
     writeFileSync(join(root, "big.ts"), "a".repeat(DEFAULT_LIMITS.maxFileBytes + 1));
     symlinkSync("/etc/hostname", join(root, "link.ts"));
     execFileSync("mkfifo", [join(root, "pipe.ts")]);
-    const t = ms(() => {
-      const p = collectProject(root, { ignorePaths: [] });
-      expect([...p.files.keys()]).toEqual(["ok.ts"]);
-      expect(p.skipped).toEqual(["big.ts: not read, larger than 1048576 bytes"]);
-      expect(p.warnings).toEqual(["1 symbolic link was not followed: link.ts"]);
-    });
-    expect(t).toBeLessThan(1000);
+    const p = collectProject(root, { ignorePaths: [] });
+    expect([...p.files.keys()]).toEqual(["ok.ts"]);
+    expect(p.skipped).toEqual(["big.ts: not read, larger than 1048576 bytes"]);
+    expect(p.warnings).toEqual(["1 symbolic link was not followed: link.ts"]);
   });
 
-  it("does not block when a path is a FIFO at the moment it is opened", () => {
+  it("does not block when a path is a FIFO at the moment it is opened", { timeout: 20_000 }, () => {
     const root = project();
     execFileSync("mkfifo", [join(root, "x.ts")]);
-    expect(ms(() => expect(readRegularFile(join(root, "x.ts"), 1024)).toEqual({ skip: "not a regular file" }))).toBeLessThan(500);
+    expect(readRegularFile(join(root, "x.ts"), 1024)).toEqual({ skip: "not a regular file" });
   });
 
   it("does not follow a symlink that replaced a file after the directory was listed", () => {
@@ -293,11 +308,11 @@ describe("reading a hostile directory tree", () => {
 });
 
 describe("the config file in a hostile repository", () => {
-  it("refuses a config that is a symlink to /dev/zero without reading it", () => {
+  // A hang is caught by the explicit test timeout; a wall-clock cap on a loaded machine only produces false failures.
+  it("refuses a config that is a symlink to /dev/zero without reading it", { timeout: 20_000 }, () => {
     const root = project();
     symlinkSync("/dev/zero", join(root, "saas-audit.config.json"));
-    let result: CliResult | undefined;
-    expect(ms(() => (result = cli([root])))).toBeLessThan(1000);
+    const result = cli([root]);
     expect(result!.code).toBe(2);
     expect(result!.err).toContain("saas-audit.config.json: could not be opened (ELOOP)");
   });
