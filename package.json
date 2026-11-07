@@ -36,10 +36,12 @@
     "prepack": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "sample": "npm run build && node dist/cli.js examples/vibe-app --markdown --output examples/sample-report.md"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
     "vitest": "5.0.5"
   },
   "dependencies": {
