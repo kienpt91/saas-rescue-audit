@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { shellQuote } from "../shell.js";
-import { findAll, lineOf, lineText, unwrap, type SourceInfo } from "../ts/source.js";
-import type { RawFinding } from "../types.js";
+import { entryLabel, entrySite, findAll, lineOf, lineText, unwrap, type SourceInfo } from "../ts/source.js";
+import type { RawFinding, Site } from "../types.js";
 import { textLine, type AuditContext, type Rule } from "./context.js";
 import { isStripeWebhook } from "./stripe.js";
 
@@ -159,8 +159,30 @@ function rateLimitFindings(ctx: AuditContext, out: RawFinding[]): void {
       message: "Login, password reset, token and webhook endpoints are brute-force and cost-amplification targets. No rate limiter, throttle or middleware limiter was found in this file or in the middleware. Informational: the platform in front of the app may already provide one.",
       evidence: lineText(src.sf, line),
       fix: "Add a limiter keyed by IP and by account (for example a sliding window in Redis) to credential and email-sending routes. Webhooks can be limited by source IP range or left to the platform.",
+      subject: [entryLabel(first)],
+      entry: entrySite(src, first),
     });
   }
+}
+
+/** Line of the object a next.config file exports (`export default x`, `module.exports = x`), or null when it cannot be found. */
+function exportedConfigLine(sf: ts.SourceFile): number | null {
+  const declared = (name: string): ts.Node | null => {
+    for (const stmt of sf.statements) {
+      if (!ts.isVariableStatement(stmt)) continue;
+      for (const d of stmt.declarationList.declarations) if (ts.isIdentifier(d.name) && d.name.text === name) return d;
+    }
+    return null;
+  };
+  for (const stmt of sf.statements) {
+    let exported: ts.Node | null = null;
+    if (ts.isExportAssignment(stmt)) exported = stmt.expression;
+    else if (ts.isExpressionStatement(stmt) && ts.isBinaryExpression(stmt.expression) && stmt.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken && /^module\.exports$/.test(stmt.expression.left.getText(sf))) exported = stmt.expression.right;
+    if (!exported) continue;
+    const value = unwrap(exported);
+    return lineOf(sf, (ts.isIdentifier(value) ? declared(value.text) : null) ?? stmt);
+  }
+  return null;
 }
 
 function securityHeaderFindings(ctx: AuditContext, out: RawFinding[]): void {
@@ -171,6 +193,10 @@ function securityHeaderFindings(ctx: AuditContext, out: RawFinding[]): void {
   if (configured) return;
   const file = config?.path ?? "package.json";
   const line = config ? 1 : (pkg!.split(/\r?\n/).findIndex((l) => /"next"\s*:/.test(l)) + 1 || 1);
+  const configLine = config ? exportedConfigLine(config.sf) : null;
+  const configSite: Site | null = config && configLine !== null && configLine !== line
+    ? { file, line: configLine, note: "next.config is where a headers() function would set the missing headers", text: lineText(config.sf, configLine) }
+    : null;
   out.push({
     rule: "security-headers",
     severity: "info",
@@ -180,6 +206,7 @@ function securityHeaderFindings(ctx: AuditContext, out: RawFinding[]): void {
     message: "No Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security or Referrer-Policy header is set in next.config or anywhere in the source. The hosting platform may add some; Next.js adds none by default.",
     evidence: config ? textLine(config.text, 1) : textLine(pkg!, line),
     fix: 'Return the headers from an async headers() function in next.config for source "/(.*)": X-Content-Type-Options nosniff, X-Frame-Options DENY, Referrer-Policy strict-origin-when-cross-origin, Strict-Transport-Security, and a Content-Security-Policy suited to the app.',
+    ...(configSite ? { sink: configSite } : {}),
   });
 }
 
@@ -198,8 +225,17 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
     const lines = text.split(/\r?\n/);
     const keyLine = new Map<string, number>();
     lines.forEach((l, i) => {
-      const key = /^\s*"([^"]{1,214})"\s*:/.exec(l)?.[1];
-      if (key !== undefined && !keyLine.has(key)) keyLine.set(key, i + 1);
+      const raw = /^\s*"((?:[^"\\]|\\.){1,214})"\s*:/.exec(l)?.[1];
+      if (raw === undefined) return;
+      let key = raw;
+      if (raw.includes("\\")) {
+        try {
+          key = String(JSON.parse(`"${raw}"`));
+        } catch {
+          return;
+        }
+      }
+      if (!keyLine.has(key)) keyLine.set(key, i + 1);
     });
     let hasDeps = false;
     for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
@@ -208,7 +244,7 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
       for (const [name, spec] of Object.entries(deps)) {
         hasDeps = true;
         if (typeof spec !== "string" || !WILDCARD_SPEC.test(spec.trim())) continue;
-        const line = keyLine.get(name) ?? 1;
+        const line = keyLine.get(name) ?? keyLine.get(section) ?? 1;
         out.push({
           rule: "deps-unpinned",
           severity: "low",
@@ -218,12 +254,14 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
           message: "Every install can resolve to a different major version, including one published minutes ago. Builds stop being reproducible and a compromised release is picked up automatically.",
           evidence: textLine(text, line),
           fix: `Pin ${name} to the version in use (npm install ${shellQuote(`${name}@<version>`)} --save-exact) and commit the lockfile.`,
+          subject: [name],
         });
       }
     }
     if (path === "package.json" && hasDeps) {
       const lock = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"].some((l) => ctx.project.paths.has(l));
       if (!lock) {
+        const declLine = Math.min(...["dependencies", "devDependencies", "optionalDependencies"].map((k) => keyLine.get(k) ?? Infinity), Infinity);
         out.push({
           rule: "deps-unpinned",
           severity: "low",
@@ -233,6 +271,8 @@ function packageFindings(ctx: AuditContext, out: RawFinding[]): void {
           message: "Without a lockfile transitive dependencies are resolved fresh on every install, so a build today and a build tomorrow can differ.",
           evidence: textLine(text, 1),
           fix: "Commit package-lock.json (or the lockfile of your package manager) and install with npm ci in CI.",
+          subject: ["no lockfile"],
+          ...(Number.isFinite(declLine) && declLine > 1 ? { sink: { file: path, line: declLine, note: "Dependencies are declared here and no lockfile exists next to this file", text: textLine(text, declLine) } } : {}),
         });
       }
     }

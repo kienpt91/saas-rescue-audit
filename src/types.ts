@@ -5,6 +5,18 @@ export const SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "l
 /** Higher number = more severe. */
 export const SEVERITY_RANK: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
+/** A place in the project that matters to a finding, and what happens there. */
+export interface Site {
+  /** Path relative to the project root, forward slashes. */
+  file: string;
+  /** 1-based. */
+  line: number;
+  /** What happens at this place, in one sentence. */
+  note: string;
+  /** The source text of the line, with credential-shaped substrings removed. */
+  text?: string;
+}
+
 export interface Finding {
   rule: string;
   severity: Severity;
@@ -19,6 +31,16 @@ export interface Finding {
   evidence: string;
   /** What to change. */
   fix: string;
+  /**
+   * The names that identify what the finding is about, in the order table, policy / handler / variable.
+   * Together with the rule and the file they identify a finding without a line number, so the identity
+   * survives edits that only move code. Absent for rules that have nothing better than their title.
+   */
+  subject?: string[];
+  /** Where outside input or exposure enters (a handler, a table), when the rule knows it. */
+  entry?: Site;
+  /** Where the weakness is, when that is not `file:line`. */
+  sink?: Site;
 }
 
 /** A finding as produced by a rule: evidence may be filled in by the engine. */

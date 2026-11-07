@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { BudgetError, DEFAULT_LIMITS, tick, withBudget, type Limits } from "../limits.js";
 import { evidenceLine } from "../redact.js";
-import type { Project } from "../types.js";
+import type { Project, Site } from "../types.js";
 
 export type FunctionLike = ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration;
 
@@ -79,6 +79,24 @@ export function lineText(sf: ts.SourceFile, line: number, max = 180): string {
     perFile.set(key, out);
   }
   return out;
+}
+
+/** Short name of an entry point for titles and finding identity: "POST handler", "Server action save". */
+export function entryLabel(entry: Entry): string {
+  if (entry.kind === "route") return `${entry.name} handler`;
+  if (entry.kind === "action") return `Server action ${entry.name}`;
+  if (entry.kind === "page") return "Page component";
+  return "API handler";
+}
+
+/** An entry point as a place in the project: where a request or a form post enters the code. */
+export function entrySite(src: SourceInfo, entry: Entry): Site {
+  const line = lineOf(src.sf, entry.decl);
+  const note =
+    entry.kind === "action"
+      ? `${entryLabel(entry)} is exposed by Next.js as a public POST endpoint`
+      : `${entryLabel(entry)} is reachable by anyone who can send a request to its URL`;
+  return { file: src.path, line, note, text: lineText(src.sf, line) };
 }
 
 export function unwrap(node: ts.Node): ts.Node {

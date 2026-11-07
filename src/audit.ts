@@ -50,6 +50,9 @@ export function audit(project: Project, config: Config, options: AuditOptions = 
             message: raw.message,
             evidence: raw.evidence ?? textLine(project.files.get(raw.file) ?? "", raw.line),
             fix: raw.fix,
+            ...(raw.subject ? { subject: raw.subject } : {}),
+            ...(raw.entry ? { entry: raw.entry } : {}),
+            ...(raw.sink ? { sink: raw.sink } : {}),
           };
           all.push(finding);
           if (ignored.has(raw.rule)) configBy.set(finding, "config ignoreRules");

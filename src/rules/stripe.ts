@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { findDataOps } from "../ts/calls.js";
-import { calleeName, findAll, lineOf, lineText, unwrap, type Entry, type SourceInfo } from "../ts/source.js";
+import { calleeName, entryLabel, entrySite, findAll, lineOf, lineText, unwrap, type Entry, type SourceInfo } from "../ts/source.js";
 import { computeTaint, isTainted, seedNames } from "../ts/taint.js";
 import type { RawFinding } from "../types.js";
 import type { Rule } from "./context.js";
@@ -158,6 +158,8 @@ function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], a
   const { sf, path } = src;
   const handler = src.entries.find((e) => e.name === "POST") ?? src.entries[0];
   const handlerLine = handler ? lineOf(sf, handler.decl) : 1;
+  const who = handler ? entryLabel(handler) : "Webhook handler";
+  const entry = handler ? { entry: entrySite(src, handler) } : {};
   const calls = findAll(sf, (n): n is ts.CallExpression => ts.isCallExpression(n));
   const reachableFns = reachableFunctions(src);
   const verifications = calls.filter((c) => isVerification(c, reachableFns, authHelpers));
@@ -174,6 +176,9 @@ function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], a
       message: `Anyone who finds this URL can POST a forged checkout.session.completed or invoice.paid event and the handler will act on it${parse ? " (the body is parsed as JSON and trusted as is)" : ""}. Stripe signs every delivery precisely so that this is not possible.`,
       evidence: parse ? lineText(sf, lineOf(sf, parse)) : lineText(sf, handlerLine),
       fix: 'Read the raw body with "await request.text()", read the stripe-signature header and call stripe.webhooks.constructEvent(rawBody, signature, process.env.STRIPE_WEBHOOK_SECRET) before using any field. Return 400 on failure.',
+      subject: [who],
+      ...entry,
+      ...(parse ? { sink: { file: path, line: lineOf(sf, parse), note: "The body is parsed as JSON and used without a signature check", text: lineText(sf, lineOf(sf, parse)) } } : {}),
     });
   } else {
     const first = verifications[0]!;
@@ -195,6 +200,8 @@ function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], a
         message: "The signature covers the exact bytes Stripe sent. Parsing the body first and re-serialising it changes those bytes, so verification fails in production. The usual workaround, trusting the parsed body and dropping verification, removes the protection altogether.",
         evidence: lineText(sf, line),
         fix: pagesBody ? 'Export config = { api: { bodyParser: false } }, read the raw buffer from the request stream, and pass that to constructEvent.' : 'Use "const rawBody = await request.text()" and pass rawBody to constructEvent; parse JSON only from the verified event.',
+        subject: [who],
+        ...entry,
       });
     }
 
@@ -216,6 +223,8 @@ function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], a
         message: "Stripe delivers events at least once and retries on any non-2xx answer, so the same event can arrive twice. Without a stored event.id, fulfilment code (credits, emails, plan changes) runs twice.",
         evidence: lineText(sf, line),
         fix: "Insert event.id into a table with a unique constraint before doing the work (on conflict do nothing) and return 200 early when the row already existed. Do the insert and the work in one transaction.",
+        subject: [who],
+        ...entry,
       });
     }
   }
@@ -232,6 +241,8 @@ function webhookFindings(src: SourceInfo, extraIdempotency: readonly string[], a
       message: "Stripe sends every event type the endpoint is subscribed to. A non-2xx answer for an event you simply do not handle is retried for days and, after repeated failures, the endpoint is disabled, which then also drops the events you do care about.",
       evidence: lineText(sf, line),
       fix: "Return 200 for unhandled types (log them) and reserve error statuses for events you tried to process and failed. Subscribe the endpoint only to the events you handle.",
+      subject: [`${who} default branch`],
+      ...entry,
     });
   }
 }
@@ -271,6 +282,8 @@ function checkoutFindings(src: SourceInfo, entry: Entry, extraRoots: readonly st
           message: "The client decides what it pays: a request with a smaller amount or a hand-written cart creates a valid payment for less. Anything the browser sends can be edited.",
           evidence: lineText(sf, l),
           fix: "Accept only a plan or product key from the client, look the price up server-side (a map of allowed Stripe price ids or a database row), and build line_items from that.",
+          subject: [`${entryLabel(entry)}: Amount or line items come from the request`],
+          entry: entrySite(src, entry),
         });
       } else if (found.price) {
         const l = lineOf(sf, found.price);
@@ -283,6 +296,8 @@ function checkoutFindings(src: SourceInfo, entry: Entry, extraRoots: readonly st
           message: "A caller can pass any price id that exists in the Stripe account, including archived, internal or discounted prices.",
           evidence: lineText(sf, l),
           fix: "Map a plan key sent by the client to a price id held on the server, and reject keys that are not in the map.",
+          subject: [`${entryLabel(entry)}: Price id comes from the request without an allow-list`],
+          entry: entrySite(src, entry),
         });
       }
     }
@@ -308,6 +323,8 @@ function checkoutFindings(src: SourceInfo, entry: Entry, extraRoots: readonly st
         message: "Nothing ties the id to the signed-in user, so a caller can pass another customer's id and open their billing portal, read or cancel their subscription, or refund their payment.",
         evidence: lineText(sf, l),
         fix: "Resolve the customer from the authenticated user (a stripe_customer_id column looked up by session user id) and ignore any id in the request. If an id must be accepted, compare it to that stored value first.",
+        subject: [`${entryLabel(entry)}: Stripe ${op.chain.links.map((link) => link.name).join(".")}`],
+        entry: entrySite(src, entry),
       });
     }
   }

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { tick } from "../limits.js";
-import { calleeName, findAll, lineOf, lineText, unwrap, type SourceInfo } from "../ts/source.js";
+import { calleeName, entryLabel, entrySite, findAll, lineOf, lineText, unwrap, type Entry, type SourceInfo } from "../ts/source.js";
 import { computeTaint, isTainted, seedNames } from "../ts/taint.js";
 import type { RawFinding } from "../types.js";
 import type { Rule } from "./context.js";
@@ -240,10 +240,10 @@ function redirectTarget(n: ts.Node): ts.Node | null {
 }
 
 function redirectFindings(src: SourceInfo, out: RawFinding[]): void {
-  const scopes: { root: ts.Node; tainted: Set<string> }[] = src.entries.map((e) => ({ root: e.fn, tainted: computeTaint(e.fn.body, seedNames(e)) }));
+  const scopes: { root: ts.Node; tainted: Set<string>; entry?: Entry }[] = src.entries.map((e) => ({ root: e.fn, tainted: computeTaint(e.fn.body, seedNames(e)), entry: e }));
   if (src.isClient) scopes.push({ root: src.sf, tainted: computeTaint(src.sf, []) });
   const seen = new Set<ts.Node>();
-  for (const { root, tainted } of scopes) {
+  for (const { root, tainted, entry } of scopes) {
     for (const node of findAll(root, (n): n is ts.Node => true)) {
       const arg = redirectTarget(node);
       if (!arg || seen.has(node) || !isTainted(arg, tainted)) continue;
@@ -259,6 +259,8 @@ function redirectFindings(src: SourceInfo, out: RawFinding[]): void {
         message: 'A crafted link such as /login?next=https://evil.example sends a user who just authenticated to an attacker-controlled page that looks like yours. Prefixing the origin does not help on its own: "https://app.example" + "@evil.example" or "//evil.example" still changes the destination.',
         evidence: lineText(src.sf, line),
         fix: 'Only accept relative paths: check value.startsWith("/") && !value.startsWith("//") && !value.includes("\\\\"), or map a short key to a fixed list of destinations, and fall back to "/" otherwise.',
+        subject: [entry ? entryLabel(entry) : "Client code"],
+        ...(entry ? { entry: entrySite(src, entry) } : {}),
       });
     }
   }

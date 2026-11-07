@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { compileGlobs } from "../glob.js";
 import { extractFilters, extractWrites, findDataOps, normalizeColumn } from "../ts/calls.js";
-import { calleeName, findAll, isFunctionLike, lineOf, lineText, type Entry, type SourceInfo } from "../ts/source.js";
+import { calleeName, entryLabel, entrySite, findAll, isFunctionLike, lineOf, lineText, type Entry, type SourceInfo } from "../ts/source.js";
 import { computeTaint, isTainted, seedNames } from "../ts/taint.js";
 import type { RawFinding } from "../types.js";
 import type { Rule } from "./context.js";
@@ -119,12 +119,6 @@ function localDataOps(entry: Entry, src: SourceInfo, extraRoots: readonly string
   return [...direct, ...viaHelpers].sort((a, b) => a.node.getStart(src.sf) - b.node.getStart(src.sf));
 }
 
-function entryLabel(entry: Entry): string {
-  if (entry.kind === "route") return `${entry.name} handler`;
-  if (entry.kind === "action") return `Server action ${entry.name}`;
-  return "API handler";
-}
-
 const ID_COLUMN = /^(?:id|uuid|.+id)$/;
 
 function idorFindings(src: SourceInfo, entry: Entry, owners: ReadonlySet<string>, extraRoots: readonly string[], out: RawFinding[]): void {
@@ -142,29 +136,35 @@ function idorFindings(src: SourceInfo, entry: Entry, owners: ReadonlySet<string>
       const f = (idFilters[0] ?? clientOwner[0])!;
       const line = lineOf(src.sf, f.value);
       const table = op.target ? ` on ${op.target}` : "";
+      const title = `${op.kind === "write" ? "Write" : "Read"}${table} filtered only by ${f.column} from the request`;
       out.push({
         rule: "api-idor",
         severity: op.kind === "write" ? "high" : "medium",
         file: src.path,
         line,
-        title: `${op.kind === "write" ? "Write" : "Read"}${table} filtered only by ${f.column} from the request`,
+        title,
         message: `The record is chosen by ${f.column}, which the caller controls, and the query has no filter on the signed-in user. Changing the id in the request reaches other users' records. If row level security already restricts this table to the owner and the query runs with the user's own client, this is defense in depth; with a service-role or admin client it is the only check.`,
         evidence: lineText(src.sf, line),
         fix: `Add an ownership condition taken from the session (for example .eq("user_id", user.id) or where: { id, userId: session.user.id }) and treat zero matched rows as 404.`,
+        subject: [`${entryLabel(entry)}: ${title}`],
+        entry: entrySite(src, entry),
       });
     }
     if (writesOwner.length > 0) {
       const w = writesOwner[0]!;
       const line = lineOf(src.sf, w.value);
+      const title = `Row owner ${w.column} is set from the request`;
       out.push({
         rule: "api-idor",
         severity: "high",
         file: src.path,
         line,
-        title: `Row owner ${w.column} is set from the request`,
+        title,
         message: `The ${op.method} writes ${w.column} with a value supplied by the caller, so anyone can create or reassign rows for other users or tenants.`,
         evidence: lineText(src.sf, line),
         fix: `Set ${w.column} from the verified session (user.id) on the server and never read it from the body.`,
+        subject: [`${entryLabel(entry)}: ${title}`],
+        entry: entrySite(src, entry),
       });
     }
   }
@@ -199,6 +199,9 @@ export const authRules: Rule = (ctx) => {
           message: `No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this ${entry.kind === "action" ? "server action" : "handler"}. ${entry.kind === "action" ? "Server actions are public POST endpoints regardless of where they are imported." : "Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate."}`,
           evidence: declLine === opLine ? `L${declLine}: ${lineText(src.sf, declLine)}` : `L${declLine}: ${lineText(src.sf, declLine)}\nL${opLine}: ${lineText(src.sf, opLine)}`,
           fix: "Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
+          subject: [entryLabel(entry)],
+          entry: entrySite(src, entry),
+          sink: { file: src.path, line: opLine, note: `${writes ? "Database write" : "Database read"} reached without any recognised auth check`, text: lineText(src.sf, opLine) },
           ...(publicRoute ? { suppressedBy: "config publicRoutes" } : {}),
         });
       }

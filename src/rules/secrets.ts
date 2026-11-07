@@ -4,7 +4,7 @@ import { isEnvFile } from "../project.js";
 import { KEY_SHAPES, redact } from "../redact.js";
 import { shellQuote } from "../shell.js";
 import { lineOf, lineText, type SourceInfo } from "../ts/source.js";
-import type { RawFinding, Severity } from "../types.js";
+import type { RawFinding, Severity, Site } from "../types.js";
 import { textLine, type AuditContext, type Rule } from "./context.js";
 
 /** Names whose value must never reach a browser. */
@@ -126,6 +126,7 @@ function publicLeak(file: string, line: number, name: string, evidence: string, 
     message: `Next.js inlines every NEXT_PUBLIC_ variable into the client bundle at build time (${where}). A name containing a secret marker means the value is readable by every visitor.`,
     evidence,
     fix: "Rename the variable without the NEXT_PUBLIC_ prefix, read it only in route handlers or server components, and rotate the key because it has already been exposed.",
+    subject: [name],
   };
 }
 
@@ -151,6 +152,10 @@ function scanSource(src: SourceInfo, out: RawFinding[], seen: Set<string>): void
 
   // 2. server secrets read from client components
   if (src.isClient) {
+    const first = sf.statements[0];
+    const directive: Site | null = first
+      ? { file: path, line: lineOf(sf, first), note: 'The file starts with "use client", so it is bundled for the browser', text: lineText(sf, lineOf(sf, first)) }
+      : null;
     for (const ref of envReferences(sf)) {
       if (ref.name.startsWith("NEXT_PUBLIC_") || !SECRET_NAME.test(ref.name)) continue;
       const line = lineOf(sf, ref.node);
@@ -163,6 +168,8 @@ function scanSource(src: SourceInfo, out: RawFinding[], seen: Set<string>): void
         message: `This file starts with "use client", so it is bundled for the browser. Non-public environment variables are not available there; code that needs ${ref.name} in the browser is either broken or one rename away from publishing it as NEXT_PUBLIC_.`,
         evidence: lineText(sf, line),
         fix: "Move the call that needs the secret into a route handler, server action or server component and call that from the client component.",
+        subject: [ref.name],
+        ...(directive ? { entry: directive } : {}),
       });
     }
   }
@@ -217,6 +224,7 @@ function hardcoded(file: string, line: number, label: string, severity: Severity
     message: "Secrets in source end up in git history, build logs and every clone. Removing the line does not remove the value from history.",
     evidence,
     fix: "Rotate the credential, load the new one from an environment variable or a secret manager, and add the variable name to .env.example without a value.",
+    subject: [label],
   };
 }
 
@@ -293,6 +301,7 @@ function scanEnvFiles(ctx: AuditContext, out: RawFinding[]): void {
       fix: isTracked
         ? `Run: git rm --cached -- ${shellQuote(path)}; then add ".env*" (and "!.env.example") to .gitignore, rotate every credential the file ever held, and keep a value-free .env.example.`
         : `Add ".env*" (and "!.env.example") to .gitignore before the first commit that includes ${path}.`,
+      subject: [path],
     });
   }
 }
