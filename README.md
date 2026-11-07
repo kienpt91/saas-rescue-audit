@@ -162,7 +162,7 @@ saas-audit /audit --findings --output findings.json
 What it says is limited to what the tool did:
 
 - Every counted finding is a **`needs_validation`** record. Nothing this tool does runs code or sends a request, so it never exports `confirmed`. The blockers start with "Static analysis only", and `validation_plan.local` says how to test the claim for that rule (for example "run proof-audit against the migrations" for the RLS rules, "send a forged signature to a local handler" for the webhook rules). The rule table in [docs/findings-export.md](docs/findings-export.md) lists the claim, blockers and plans per rule.
-- A finding the project silenced itself (an ignore comment, `ignoreRules`, `publicRoutes`) is a **`rejected`** record whose reason says it was the project's decision and that the tool did not test or disprove it. It keeps the fingerprint it had before.
+- A finding the project silenced itself (an ignore comment, `ignoreRules`, `publicRoutes`) is a **`rejected`** record whose reason says it was the project's decision and that the tool did not test or disprove it. It keeps the fingerprint it had before. Here `rejected` means "silenced by the project, not refuted", so a consumer that hides rejected records by default will hide findings the project chose to silence.
 - The `fingerprint` is `saas-audit/<rule>:<path>:<subject>`, built from the rule, the file and the table, policy, handler or variable name, never from a line number or a time: the same input gives the same fingerprints and an edit that only moves code does not change them.
 - `trace` has an entrypoint (the handler or table) and a sink where the rule records both, and `evidence` quotes the source line. Every `file:line` is a position the tool already holds.
 - The format's own limits (1000 records, 5 MiB, repository-relative paths) are respected: anything left out is counted on stderr.
@@ -207,16 +207,16 @@ Dependencies are pinned exactly and installed with `--ignore-scripts` and a publ
 
 ### Tests and coverage
 
-`npm test` runs 454 tests in 18 files, all offline; `npm run coverage` runs them with V8 coverage and fails below the thresholds in `vitest.config.ts`. The numbers below are from one run in the container above (Node 22.22), after the findings export was added:
+`npm test` runs 484 tests in 18 files, all offline; `npm run coverage` runs them with V8 coverage and fails below the thresholds in `vitest.config.ts`. The numbers below are from one run in the container above (Node 22.22), after the findings export was added:
 
 | Scope | Statements | Branches | Functions | Lines |
 | --- | --- | --- | --- | --- |
-| all of `src` | 94.38% | 87.16% | 97.82% | 97.60% |
+| all of `src` | 94.45% | 87.20% | 97.82% | 97.69% |
 | `src/report` (the report renderers and the findings export) | 100% | 94.32% | 100% | 100% |
 | `src/report/findings.ts` | 100% | 92.92% | 100% | 100% |
 | `src/ts` (TypeScript taint and call analysis, the lowest) | 86.96% | 77.35% | 92.72% | 92.51% |
 
-The findings export has 85 of those tests (`test/findings.test.ts`): a conformance check written for this repository and tested against deliberately broken records; the fingerprint encoding and its stability under a second run, lines added above the code, an ignore comment and a moved handler; every rule's plan against the catalog and against `docs/findings-export.md`; hostile and odd input (unknown rules, invisible or control-character text, lone surrogates, bad lines and file names, more than 1000 records, more than 5 MiB); 300 generated projects with names built from awkward characters, each checked for conformance, repeatability, line-shift stability and for losing no finding without counting it; and the command line.
+The findings export has 113 of those tests (`test/findings.test.ts`): a conformance check written for this repository and tested against deliberately broken records; the fingerprint encoding and its stability under a second run, lines added above the code, an ignore comment and a moved handler; every rule's plan against the catalog and against `docs/findings-export.md`; hostile and odd input (unknown rules, invisible or control-character text, lone surrogates, bad lines and file names, more than 1000 records, more than 5 MiB); 300 generated projects with names built from awkward characters, each checked for conformance, repeatability, line-shift stability and for losing no finding without counting it; and the command line.
 
 ## Secrets and hooks
 

@@ -214,8 +214,43 @@ describe("conformance check (the test oracle)", () => {
   });
 
   it("agrees with the encoder's path rule on a table of paths", () => {
-    const paths = ["a/b.ts", ".env.local", "[id]/route.ts", "a b/c", "a/", "/a", "a//b", "a:b", "a\\b", "a./b", "a /b", "con", "nul.txt", "com1", "com0", "x\u0000y", "x\u202ey", "x\ud800", "~a", ".", "..", "a/./b", " a", "日本/ファイル.ts", "a/b.c.d"];
+    const paths = ["a/b.ts", ".env.local", "[id]/route.ts", "a b/c", "a/", "/a", "a//b", "a:b", "a\\b", "a./b", "a /b", "con", "nul.txt", "com1", "x\u0000y", "x\u202ey", "x\ud800", "~a", ".", "..", "a/./b", " a", "日本/ファイル.ts", "a/b.c.d"];
     for (const p of paths) expect(isRepositoryPath(p), JSON.stringify(p)).toBe(isSafePath(p));
+  });
+
+  // Facts of the format written out literally, so the encoder and the oracle cannot drift together: true = accepted.
+  it.each<[string, boolean]>([
+    ["com0", true],
+    ["lpt0.txt", true],
+    ["src/com0/x.ts", true],
+    ["com1", false],
+    ["COM9.log", false],
+    ["com\u00b9", false],
+    ["lpt\u00b2.txt", false],
+    ["a/LPT\u00b3", false],
+    ["lpt9.x", false],
+    ["com10", true],
+    ["comx", true],
+    ["CON.txt", false],
+    ["prn", false],
+    ["Aux.tar.gz", false],
+    ["conin$", false],
+    ["CLOCK$.js", false],
+    ["a/nul.", false],
+    ["a/nul /b", false],
+    ["console.ts", true],
+    ["C:", false],
+    ["C:/x", false],
+    ["~", false],
+    ["~x/y", false],
+    ["x/~", true],
+    ["a/b ", false],
+    ["a\u00a0", false],
+    ["a\u00ad/b", false],
+    ["a\u2028b", false],
+  ])("agrees with the format on the path %j: accepted=%s", (path, accepted) => {
+    expect(isRepositoryPath(path)).toBe(accepted);
+    expect(isSafePath(path)).toBe(accepted);
   });
 });
 

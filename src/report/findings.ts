@@ -13,7 +13,10 @@
  *
  * The record types below can only describe those two verdicts, so the encoder cannot produce another one.
  * Text that comes from the audited repository is made safe for a reader before it is written: control,
- * format, line-separator and default-ignorable characters and lone surrogates become visible escapes.
+ * format, line-separator and default-ignorable characters and lone surrogates become visible escapes
+ * (`\x1b`, `\u{202e}`). Backslashes are not escaped, so a source line that really contains the text `\x1b`
+ * reads the same as one that contained the control character; the escapes are for the reader's safety,
+ * not a reversible encoding.
  */
 import { SEVERITY_RANK, type AuditResult, type Finding, type Site, type SuppressedFinding } from "../types.js";
 import { FALLBACK_PLAN, RULE_PLANS, STATIC_ONLY_BLOCKER, type RulePlan } from "./findings-plans.js";
@@ -69,15 +72,15 @@ export interface FindingsExport {
   text: string;
 }
 
-/** The format reader's limits. A larger export would be refused, so the lowest-rated findings are left out and counted. */
+/** The format reader's limits. A larger export would be refused, so the lowest-rated findings (by severity, silenced or not) are left out and counted. */
 export const MAX_RECORDS = 1000;
 export const MAX_BYTES = 5 * 1024 * 1024;
 
 export const OMISSION_TEXT: Readonly<Record<OmissionReason, string>> = {
   "path-not-representable": "the file name cannot be written as a repository-relative path in this format (control characters, a colon, a backslash, a trailing dot or space, a reserved name)",
   "line-unknown": "the line number is not a positive integer",
-  "record-limit": `beyond the ${MAX_RECORDS}-record limit of the format; the highest-rated findings were kept`,
-  "size-limit": "beyond the 5 MiB size limit of the format; the highest-rated findings were kept",
+  "record-limit": `beyond the ${MAX_RECORDS}-record limit of the format; findings were kept in order of severity until it was reached`,
+  "size-limit": "beyond the 5 MiB size limit of the format; findings were kept in order of severity until the first one that did not fit",
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -103,7 +106,7 @@ function prose(text: string, fallback: string, lines = false): string {
   return VISIBLE_CHAR.test(safe) ? safe : fallback;
 }
 
-const RESERVED_NAME = /^(?:con|prn|aux|nul|conin\$|conout\$|clock\$|(?:com|lpt)[0-9\u00b9\u00b2\u00b3])(?:\.|$)/iu;
+const RESERVED_NAME = /^(?:con|prn|aux|nul|conin\$|conout\$|clock\$|(?:com|lpt)[1-9\u00b9\u00b2\u00b3])(?:\.|$)/iu;
 const PATH_UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\\:]/u;
 
 /** A path the format accepts: relative, forward slashes, nothing a file system or a terminal treats specially. */
@@ -273,6 +276,10 @@ function tally(omitted: Map<OmissionReason, number>, reason: OmissionReason, cou
 /**
  * Builds the export: needs_validation for every counted finding, rejected for every silenced one,
  * sorted by fingerprint. Findings the format cannot hold are counted in `omitted`.
+ *
+ * When the limits bite, records are taken in order of the tool's severity (then fingerprint) until the
+ * first one that does not fit; it and every record after it are counted. A silenced finding keeps the
+ * severity rank of the finding it was, so a silenced critical outranks a live medium.
  */
 export function exportFindings(result: AuditResult): FindingsExport {
   const candidates = toCandidates(result);
@@ -286,19 +293,19 @@ export function exportFindings(result: AuditResult): FindingsExport {
     else built.push(outcome);
   }
 
-  // keep the highest-rated findings when the format's limits are exceeded
+  // when the format's limits are exceeded, stop at the first record that does not fit
   built.sort((a, b) => b.rank - a.rank || (a.record.fingerprint < b.record.fingerprint ? -1 : a.record.fingerprint > b.record.fingerprint ? 1 : 0));
   const kept: FindingRecord[] = [];
   let bytes = 16;
-  for (const { record } of built) {
+  for (const [i, { record }] of built.entries()) {
     if (kept.length >= MAX_RECORDS) {
-      tally(omitted, "record-limit");
-      continue;
+      tally(omitted, "record-limit", built.length - i);
+      break;
     }
     const size = recordBytes(record);
     if (bytes + size > MAX_BYTES) {
-      tally(omitted, "size-limit");
-      continue;
+      tally(omitted, "size-limit", built.length - i);
+      break;
     }
     bytes += size;
     kept.push(record);

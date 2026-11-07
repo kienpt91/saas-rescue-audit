@@ -13,4 +13,4 @@ Notable changes. Earlier history is in the git log; release notes are generated 
 
 ### Changed
 
-- `deps-unpinned` and the other findings located through `package.json` keys now find the line of a key that is written with JSON escapes (before, such a key fell back to line 1).
+- `deps-unpinned` and the other findings located through `package.json` keys now find the line of a key that is written with JSON escapes (before, such a key fell back to line 1). A key that the line map does not hold (for example one longer than 214 characters) falls back to the line of its section (`dependencies` and so on) instead of line 1.

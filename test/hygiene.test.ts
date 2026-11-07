@@ -121,6 +121,22 @@ describe("deps-unpinned", () => {
     expect(f.every((x) => x.severity === "low")).toBe(true);
   });
 
+  it("finds the line of a package.json key written with JSON escapes", () => {
+    const pkg = lines("{", '  "name": "x",', '  "dependencies": {', '    "st\\u0072ipe": "latest",', '    "a\\"b": "*"', "  }", "}");
+    const f = run({ "package.json": pkg, "package-lock.json": "" }).findings.filter((x) => x.rule === "deps-unpinned").sort((a, b) => a.line - b.line);
+    expect(f.map((x) => [x.line, x.title])).toEqual([
+      [4, 'stripe is declared as "latest"'],
+      [5, 'a"b is declared as "*"'],
+    ]);
+  });
+
+  it("falls back to the line of the section when a dependency key is not in the line map", () => {
+    const name = "x".repeat(300);
+    const pkg = lines("{", '  "name": "x",', '  "dependencies": {', `    "${name}": "*"`, "  }", "}");
+    const f = run({ "package.json": pkg, "package-lock.json": "" }).findings.filter((x) => x.rule === "deps-unpinned");
+    expect(f.map((x) => x.line)).toEqual([3]);
+  });
+
   it("is quiet for pinned versions with a lockfile (npm, pnpm, yarn or bun)", () => {
     for (const lock of ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock"]) {
       const r = run({ "package.json": '{ "name": "x", "dependencies": { "left-pad": "1.3.0" } }\n', [lock]: "" });

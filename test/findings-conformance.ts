@@ -1,14 +1,15 @@
 /**
- * A small, independent conformance check for the findings.json shape, covering the two verdicts this
- * tool emits (`needs_validation` and `rejected`) and refusing `confirmed`. It is written from the public
- * description of the format and shares no code with the encoder under test, so a mistake in one is
- * unlikely to be repeated in the other. It returns every problem it finds as a readable string.
+ * A small conformance check for the findings.json shape, covering the two verdicts this tool emits
+ * (`needs_validation` and `rejected`) and refusing `confirmed`. It shares no code with the encoder under
+ * test, but it does share the format's facts (the path rules, the fingerprint alphabet, the limits), so it
+ * catches structural mistakes in the encoder, not a wrong reading of those facts. Those facts are pinned by
+ * the table of paths in findings.test.ts. It returns every problem it finds as a readable string.
  */
 
 const FINGERPRINT = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 const HAS_VISIBLE = /[^\p{White_Space}\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
 const BAD_PATH_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\\:]/u;
-const RESERVED = /^(?:con|prn|aux|nul|conin\$|conout\$|clock\$|(?:com|lpt)[0-9\u00b9\u00b2\u00b3])(?:\.|$)/iu;
+const RESERVED = /^(?:con|prn|aux|nul|conin\$|conout\$|clock\$|(?:com|lpt)[1-9\u00b9\u00b2\u00b3])(?:\.|$)/iu;
 
 export const MAX_RECORDS = 1000;
 export const MAX_BYTES = 5 * 1024 * 1024;

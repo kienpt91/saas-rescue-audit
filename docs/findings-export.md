@@ -87,10 +87,10 @@ The scheme is shared with the `proof-audit` export in this family of tools, so a
 
 ## Limits
 
-The format's readers limit an array to 1000 records and the text to 5 MiB. When an export is larger, the lowest-rated findings (the tool's own severity, then fingerprint) are left out and counted on stderr, for example:
+The format's readers limit an array to 1000 records and the text to 5 MiB. When an export is larger, records are taken in order of the tool's own severity, then fingerprint, until the limit is reached or the first record that does not fit (that record and every one after it are left out, so a smaller, lower-rated record is never kept in place of a larger one). Every omission is counted on stderr. A silenced (`rejected`) finding keeps the severity of the finding it was, so a silenced critical ranks above a live medium. For example:
 
 ```
-findings export: 200 findings left out: beyond the 1000-record limit of the format; the highest-rated findings were kept
+findings export: 200 findings left out: beyond the 1000-record limit of the format; findings were kept in order of severity until it was reached
 ```
 
 A finding is also left out, and counted, when its file name cannot be written as a repository-relative path in the format (control or format characters, a colon, a backslash, a segment ending in a dot or space, a reserved Windows name, an absolute or `..` path) or when its line is not a positive integer. An entrypoint or sink site with such a path is dropped from the trace instead, and the finding is kept. No finding is dropped without a count.
@@ -101,7 +101,7 @@ An audit that was incomplete (files skipped) still exits with code 3 when there 
 
 The text is built from the same finding data as the other formats, so the same redaction applies: evidence lines are scrubbed of credential-shaped substrings (known key shapes, JWTs, database URL passwords, private key blocks) **before** they are cut to length, a line whose secret is visible only after decoding escapes is withheld, and at most a four-character vendor prefix is shown. A secret the patterns do not recognise is not removed. The records still contain **file paths, table, policy, handler and variable names, and source lines** from the audited project, so treat the file as sensitive.
 
-Unlike `--json`, which keeps repository text exactly as found, the findings export also turns control characters, bidirectional overrides, zero-width and other default-ignorable characters, line separators and lone surrogates into visible escapes (`\x1b`, `\u{202e}`) in every text field, because the consumer of this format is another program that may show or process the text. File names that contain such characters cannot be written as paths and are left out. The export contains no timestamps and no absolute paths.
+Unlike `--json`, which keeps repository text exactly as found, the findings export also turns control characters, bidirectional overrides, zero-width and other default-ignorable characters, line separators and lone surrogates into visible escapes (`\x1b`, `\u{202e}`) in every text field, because the consumer of this format is another program that may show or process the text. Backslashes are not escaped, so a source line that really contains the text `\x1b` reads the same as one that held the control character: the escapes protect the reader, they are not a reversible encoding. File names that contain such characters cannot be written as paths and are left out. The export contains no timestamps and no absolute paths.
 
 ## The `--json` fields behind it
 
