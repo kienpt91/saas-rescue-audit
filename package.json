@@ -37,7 +37,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "sample": "npm run build && node dist/cli.js examples/vibe-app --markdown --output examples/sample-report.md"
+    "sample": "npm run build && node dist/cli.js examples/vibe-app --markdown --output examples/sample-report.md",
+    "sample:findings": "npm run build && node dist/cli.js examples/vibe-app --findings --fail-on none --output examples/sample-findings.json"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

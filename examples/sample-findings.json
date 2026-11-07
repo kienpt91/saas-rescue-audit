@@ -1,0 +1,1252 @@
+[
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-idor:app/actions.ts:Server+20action+20deleteNote+3a+20Write+20on+20notes+20filtered+20only+20by+20id+20from+20the+20request",
+    "title": "Write on notes filtered only by id from the request",
+    "description": "The record is chosen by id, which the caller controls, and the query has no filter on the signed-in user. Changing the id in the request reaches other users' records. If row level security already restricts this table to the owner and the query runs with the user's own client, this is defense in depth; with a service-role or admin client it is the only check. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Add an ownership condition taken from the session (for example .eq(\"user_id\", user.id) or where: { id, userId: session.user.id }) and treat zero matched rows as 404.",
+    "claimed_root_cause": "A record is chosen by an id from the request with no ownership filter, or a row owner is set from client input.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/actions.ts",
+        "line": 5,
+        "scope": "Server action deleteNote: Write on notes filtered only by id from the request",
+        "description": "Server action deleteNote is exposed by Next.js as a public POST endpoint"
+      },
+      {
+        "kind": "sink",
+        "file": "app/actions.ts",
+        "line": 6,
+        "scope": "Server action deleteNote: Write on notes filtered only by id from the request",
+        "description": "The query is filtered only by a value the caller controls"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/actions.ts",
+        "line": 6,
+        "description": "Source line: await supabase.from(\"notes\").delete().eq(\"id\", noteId);"
+      },
+      {
+        "file": "app/actions.ts",
+        "line": 5,
+        "description": "Source line: export async function deleteNote(noteId: string) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Row level security, or an ownership check in an imported helper, may already restrict the query; the tool does not know which database client it runs with."
+    ],
+    "validation_plan": {
+      "local": "Create records for two users, then as user A request user B's record id (or create a row with B's owner id): returned or changed data confirms it."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-idor:app/api/projects/+5bid+5d/route.ts:DELETE+20handler+3a+20Write+20on+20projects+20filtered+20only+20by+20id+20from+20the+20request",
+    "title": "Write on projects filtered only by id from the request",
+    "description": "The record is chosen by id, which the caller controls, and the query has no filter on the signed-in user. Changing the id in the request reaches other users' records. If row level security already restricts this table to the owner and the query runs with the user's own client, this is defense in depth; with a service-role or admin client it is the only check. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Add an ownership condition taken from the session (for example .eq(\"user_id\", user.id) or where: { id, userId: session.user.id }) and treat zero matched rows as 404.",
+    "claimed_root_cause": "A record is chosen by an id from the request with no ownership filter, or a row owner is set from client input.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/projects/[id]/route.ts",
+        "line": 5,
+        "scope": "DELETE handler: Write on projects filtered only by id from the request",
+        "description": "DELETE handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/projects/[id]/route.ts",
+        "line": 10,
+        "scope": "DELETE handler: Write on projects filtered only by id from the request",
+        "description": "The query is filtered only by a value the caller controls"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/projects/[id]/route.ts",
+        "line": 10,
+        "description": "Source line: await supabase.from(\"projects\").delete().eq(\"id\", id);"
+      },
+      {
+        "file": "app/api/projects/[id]/route.ts",
+        "line": 5,
+        "description": "Source line: export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Row level security, or an ownership check in an imported helper, may already restrict the query; the tool does not know which database client it runs with."
+    ],
+    "validation_plan": {
+      "local": "Create records for two users, then as user A request user B's record id (or create a row with B's owner id): returned or changed data confirms it."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-idor:app/api/projects/route.ts:POST+20handler+3a+20Row+20owner+20user_id+20is+20set+20from+20the+20request",
+    "title": "Row owner user_id is set from the request",
+    "description": "The insert writes user_id with a value supplied by the caller, so anyone can create or reassign rows for other users or tenants. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Set user_id from the verified session (user.id) on the server and never read it from the body.",
+    "claimed_root_cause": "A record is chosen by an id from the request with no ownership filter, or a row owner is set from client input.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/projects/route.ts",
+        "line": 9,
+        "scope": "POST handler: Row owner user_id is set from the request",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/projects/route.ts",
+        "line": 13,
+        "scope": "POST handler: Row owner user_id is set from the request",
+        "description": "The query is filtered only by a value the caller controls"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/projects/route.ts",
+        "line": 13,
+        "description": "Source line: .insert({ name: body.name, user_id: body.userId })"
+      },
+      {
+        "file": "app/api/projects/route.ts",
+        "line": 9,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Row level security, or an ownership check in an imported helper, may already restrict the query; the tool does not know which database client it runs with."
+    ],
+    "validation_plan": {
+      "local": "Create records for two users, then as user A request user B's record id (or create a row with B's owner id): returned or changed data confirms it."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-route-no-auth:app/actions.ts:Server+20action+20deleteNote",
+    "title": "Server action deleteNote writes data without an auth check",
+    "description": "No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this server action. Server actions are public POST endpoints regardless of where they are imported. saas-audit rates this critical; that is its own static rating, not a demonstrated impact. Suggested change: Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
+    "claimed_root_cause": "A route handler or server action reads or writes data without calling any recognised authentication helper.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/actions.ts",
+        "line": 5,
+        "scope": "Server action deleteNote",
+        "description": "Server action deleteNote is exposed by Next.js as a public POST endpoint"
+      },
+      {
+        "kind": "sink",
+        "file": "app/actions.ts",
+        "line": 6,
+        "scope": "Server action deleteNote",
+        "description": "Database write reached without any recognised auth check"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/actions.ts",
+        "line": 6,
+        "description": "Source line: await supabase.from(\"notes\").delete().eq(\"id\", noteId);"
+      },
+      {
+        "file": "app/actions.ts",
+        "line": 5,
+        "description": "Source line: export async function deleteNote(noteId: string) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Authentication done by middleware, a wrapper or an imported helper under a name the tool does not recognise is not followed.",
+      "Whether the data is meant to be public was not decided."
+    ],
+    "validation_plan": {
+      "local": "Call the route with no session cookie and no Authorization header: any data returned or changed, instead of 401 or 403, confirms it.",
+      "deployment": "Repeat the unauthenticated call against the deployed URL, where middleware and platform rules also apply."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-route-no-auth:app/api/checkout/route.ts:POST+20handler",
+    "title": "POST handler writes data without an auth check",
+    "description": "No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this handler. Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate. saas-audit rates this critical; that is its own static rating, not a demonstrated impact. Suggested change: Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
+    "claimed_root_cause": "A route handler or server action reads or writes data without calling any recognised authentication helper.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/checkout/route.ts",
+        "line": 6,
+        "scope": "POST handler",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/checkout/route.ts",
+        "line": 9,
+        "scope": "POST handler",
+        "description": "Database write reached without any recognised auth check"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/checkout/route.ts",
+        "line": 9,
+        "description": "Source line: const session = await stripe.checkout.sessions.create({"
+      },
+      {
+        "file": "app/api/checkout/route.ts",
+        "line": 6,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Authentication done by middleware, a wrapper or an imported helper under a name the tool does not recognise is not followed.",
+      "Whether the data is meant to be public was not decided."
+    ],
+    "validation_plan": {
+      "local": "Call the route with no session cookie and no Authorization header: any data returned or changed, instead of 401 or 403, confirms it.",
+      "deployment": "Repeat the unauthenticated call against the deployed URL, where middleware and platform rules also apply."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-route-no-auth:app/api/projects/route.ts:GET+20handler",
+    "title": "GET handler reads data without an auth check",
+    "description": "No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this handler. Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
+    "claimed_root_cause": "A route handler or server action reads or writes data without calling any recognised authentication helper.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/projects/route.ts",
+        "line": 4,
+        "scope": "GET handler",
+        "description": "GET handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/projects/route.ts",
+        "line": 5,
+        "scope": "GET handler",
+        "description": "Database read reached without any recognised auth check"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/projects/route.ts",
+        "line": 5,
+        "description": "Source line: const { data } = await supabase.from(\"projects\").select(\"*\");"
+      },
+      {
+        "file": "app/api/projects/route.ts",
+        "line": 4,
+        "description": "Source line: export async function GET() {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Authentication done by middleware, a wrapper or an imported helper under a name the tool does not recognise is not followed.",
+      "Whether the data is meant to be public was not decided."
+    ],
+    "validation_plan": {
+      "local": "Call the route with no session cookie and no Authorization header: any data returned or changed, instead of 401 or 403, confirms it.",
+      "deployment": "Repeat the unauthenticated call against the deployed URL, where middleware and platform rules also apply."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-route-no-auth:app/api/projects/route.ts:POST+20handler",
+    "title": "POST handler writes data without an auth check",
+    "description": "No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this handler. Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate. saas-audit rates this critical; that is its own static rating, not a demonstrated impact. Suggested change: Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
+    "claimed_root_cause": "A route handler or server action reads or writes data without calling any recognised authentication helper.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/projects/route.ts",
+        "line": 9,
+        "scope": "POST handler",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/projects/route.ts",
+        "line": 11,
+        "scope": "POST handler",
+        "description": "Database write reached without any recognised auth check"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/projects/route.ts",
+        "line": 11,
+        "description": "Source line: const { data, error } = await supabase"
+      },
+      {
+        "file": "app/api/projects/route.ts",
+        "line": 9,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Authentication done by middleware, a wrapper or an imported helper under a name the tool does not recognise is not followed.",
+      "Whether the data is meant to be public was not decided."
+    ],
+    "validation_plan": {
+      "local": "Call the route with no session cookie and no Authorization header: any data returned or changed, instead of 401 or 403, confirms it.",
+      "deployment": "Repeat the unauthenticated call against the deployed URL, where middleware and platform rules also apply."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/api-route-no-auth:app/api/public-notes/route.ts:GET+20handler",
+    "title": "GET handler reads data without an auth check",
+    "description": "No call to a recognised auth helper (getUser, getSession, auth, requireUser, ...) was found in this handler. Route handlers are reachable by anyone who knows the URL, and middleware alone is not a reliable gate. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Resolve the user at the top of the handler and return 401 when there is none, then scope every query to that user. If the route is public on purpose, list it in publicRoutes in saas-audit.config.json or add a saas-audit-ignore-file comment with the reason. Custom helpers can be added with authHelpers.",
+    "claimed_root_cause": "A route handler or server action reads or writes data without calling any recognised authentication helper.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/public-notes/route.ts",
+        "line": 4,
+        "scope": "GET handler",
+        "description": "GET handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/public-notes/route.ts",
+        "line": 5,
+        "scope": "GET handler",
+        "description": "Database read reached without any recognised auth check"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/public-notes/route.ts",
+        "line": 5,
+        "description": "Source line: const { data } = await supabase.from(\"notes\").select(\"id, body, user_id\").limit(100);"
+      },
+      {
+        "file": "app/api/public-notes/route.ts",
+        "line": 4,
+        "description": "Source line: export async function GET(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Authentication done by middleware, a wrapper or an imported helper under a name the tool does not recognise is not followed.",
+      "Whether the data is meant to be public was not decided."
+    ],
+    "validation_plan": {
+      "local": "Call the route with no session cookie and no Authorization header: any data returned or changed, instead of 401 or 403, confirms it.",
+      "deployment": "Repeat the unauthenticated call against the deployed URL, where middleware and platform rules also apply."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/build-checks-disabled:next.config.mjs:next+20build+20ignores+20TypeScript+20errors",
+    "title": "next build ignores TypeScript errors",
+    "description": "Type errors ship to production unnoticed. Generated code that does not compile often contains exactly the wrong-argument and missing-await mistakes that cause security and billing bugs, and this switch hides them. saas-audit rates this medium; that is its own static rating, not a demonstrated impact. Suggested change: Remove the flag and fix the type errors (npx tsc --noEmit lists them). Run the check in CI so it cannot regress.",
+    "claimed_root_cause": "next build is configured to ignore TypeScript or lint errors, so they ship unnoticed.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "next.config.mjs",
+        "line": 4,
+        "scope": "next build ignores TypeScript errors",
+        "description": "The build check is switched off here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "next.config.mjs",
+        "line": 4,
+        "description": "Source line: typescript: { ignoreBuildErrors: true },"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "How many errors the flag hides was not measured."
+    ],
+    "validation_plan": {
+      "local": "In a clean clone, run npx tsc --noEmit and the project's lint command: the errors they list are what the flag hides."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/build-checks-disabled:next.config.mjs:next+20build+20skips+20ESLint",
+    "title": "next build skips ESLint",
+    "description": "Lint errors ship to production unnoticed. Generated code that does not compile often contains exactly the wrong-argument and missing-await mistakes that cause security and billing bugs, and this switch hides them. saas-audit rates this medium; that is its own static rating, not a demonstrated impact. Suggested change: Remove the flag and fix the lint errors. Run the check in CI so it cannot regress.",
+    "claimed_root_cause": "next build is configured to ignore TypeScript or lint errors, so they ship unnoticed.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "next.config.mjs",
+        "line": 5,
+        "scope": "next build skips ESLint",
+        "description": "The build check is switched off here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "next.config.mjs",
+        "line": 5,
+        "description": "Source line: eslint: { ignoreDuringBuilds: true },"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "How many errors the flag hides was not measured."
+    ],
+    "validation_plan": {
+      "local": "In a clean clone, run npx tsc --noEmit and the project's lint command: the errors they list are what the flag hides."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/cors-wildcard-credentials:app/api/public-notes/route.ts:CORS+20reflects+20the+20request+20origin+20together+20with+20credentials",
+    "title": "CORS reflects the request origin together with credentials",
+    "description": "Echoing the Origin header back with credentials allowed lets any website make authenticated requests to this API in the visitor's browser and read the response. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Keep an explicit list of allowed origins, compare the Origin header against it, and only then set Access-Control-Allow-Origin to that exact value. Never combine a wildcard with credentials.",
+    "claimed_root_cause": "Access-Control-Allow-Origin is a wildcard or reflects the request origin while credentials are allowed.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "app/api/public-notes/route.ts",
+        "line": 11,
+        "scope": "CORS reflects the request origin together with credentials",
+        "description": "The CORS headers are set here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/public-notes/route.ts",
+        "line": 11,
+        "description": "Source line: \"Access-Control-Allow-Origin\": origin,"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Headers added or overwritten by middleware, the platform or a CDN are not visible."
+    ],
+    "validation_plan": {
+      "local": "Send a request with an Origin header from another site and a session cookie, and read the Access-Control-Allow-Origin and Access-Control-Allow-Credentials response headers.",
+      "deployment": "Send the same request to the deployed URL, after the platform and CDN have applied their headers."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/deps-unpinned:package.json:+40supabase+2fsupabase-js",
+    "title": "@supabase/supabase-js is declared as \"*\"",
+    "description": "Every install can resolve to a different major version, including one published minutes ago. Builds stop being reproducible and a compromised release is picked up automatically. saas-audit rates this low; that is its own static rating, not a demonstrated impact. Suggested change: Pin @supabase/supabase-js to the version in use (npm install '@supabase/supabase-js@<version>' --save-exact) and commit the lockfile.",
+    "claimed_root_cause": "A dependency is declared as * or latest, or the project has no lockfile, so installs are not reproducible.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "package.json",
+        "line": 10,
+        "scope": "@supabase/supabase-js",
+        "description": "The dependency declaration is here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "package.json",
+        "line": 10,
+        "description": "Source line: \"@supabase/supabase-js\": \"*\","
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "The versions actually resolved today were not looked up; the tool does not use the network."
+    ],
+    "validation_plan": {
+      "local": "Install twice in clean containers at different times, or run npm install --package-lock-only, and compare the resolved versions of the unpinned packages."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/deps-unpinned:package.json:next",
+    "title": "next is declared as \"latest\"",
+    "description": "Every install can resolve to a different major version, including one published minutes ago. Builds stop being reproducible and a compromised release is picked up automatically. saas-audit rates this low; that is its own static rating, not a demonstrated impact. Suggested change: Pin next to the version in use (npm install 'next@<version>' --save-exact) and commit the lockfile.",
+    "claimed_root_cause": "A dependency is declared as * or latest, or the project has no lockfile, so installs are not reproducible.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "package.json",
+        "line": 11,
+        "scope": "next",
+        "description": "The dependency declaration is here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "package.json",
+        "line": 11,
+        "description": "Source line: \"next\": \"latest\","
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "The versions actually resolved today were not looked up; the tool does not use the network."
+    ],
+    "validation_plan": {
+      "local": "Install twice in clean containers at different times, or run npm install --package-lock-only, and compare the resolved versions of the unpinned packages."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/deps-unpinned:package.json:no+20lockfile",
+    "title": "No lockfile",
+    "description": "Without a lockfile transitive dependencies are resolved fresh on every install, so a build today and a build tomorrow can differ. saas-audit rates this low; that is its own static rating, not a demonstrated impact. Suggested change: Commit package-lock.json (or the lockfile of your package manager) and install with npm ci in CI.",
+    "claimed_root_cause": "A dependency is declared as * or latest, or the project has no lockfile, so installs are not reproducible.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "package.json",
+        "line": 9,
+        "scope": "no lockfile",
+        "description": "Dependencies are declared here and no lockfile exists next to this file"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "package.json",
+        "line": 9,
+        "description": "Source line: \"dependencies\": {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "The versions actually resolved today were not looked up; the tool does not use the network."
+    ],
+    "validation_plan": {
+      "local": "Install twice in clean containers at different times, or run npm install --package-lock-only, and compare the resolved versions of the unpinned packages."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/no-rate-limit:app/api/auth/callback/route.ts:GET+20handler",
+    "title": "No rate limiting recognised on an auth or webhook route",
+    "description": "Login, password reset, token and webhook endpoints are brute-force and cost-amplification targets. No rate limiter, throttle or middleware limiter was found in this file or in the middleware. Informational: the platform in front of the app may already provide one. saas-audit rates this info; that is its own static rating, not a demonstrated impact. Suggested change: Add a limiter keyed by IP and by account (for example a sliding window in Redis) to credential and email-sending routes. Webhooks can be limited by source IP range or left to the platform.",
+    "claimed_root_cause": "An authentication or webhook route has no recognisable rate limiting.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/auth/callback/route.ts",
+        "line": 4,
+        "scope": "GET handler",
+        "description": "GET handler is reachable by anyone who can send a request to its URL"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/auth/callback/route.ts",
+        "line": 4,
+        "description": "Source line: export async function GET(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Rate limiting by the platform, a WAF or a CDN is configured outside the repository."
+    ],
+    "validation_plan": {
+      "local": "Send a burst of requests (for example 100 within a minute) to the route on a local instance and check whether any answer is 429.",
+      "deployment": "Repeat the burst against the deployed URL and check the platform's rate-limit settings."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/no-rate-limit:app/api/stripe/webhook/route.ts:POST+20handler",
+    "title": "No rate limiting recognised on an auth or webhook route",
+    "description": "Login, password reset, token and webhook endpoints are brute-force and cost-amplification targets. No rate limiter, throttle or middleware limiter was found in this file or in the middleware. Informational: the platform in front of the app may already provide one. saas-audit rates this info; that is its own static rating, not a demonstrated impact. Suggested change: Add a limiter keyed by IP and by account (for example a sliding window in Redis) to credential and email-sending routes. Webhooks can be limited by source IP range or left to the platform.",
+    "claimed_root_cause": "An authentication or webhook route has no recognisable rate limiting.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "scope": "POST handler",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Rate limiting by the platform, a WAF or a CDN is configured outside the repository."
+    ],
+    "validation_plan": {
+      "local": "Send a burst of requests (for example 100 within a minute) to the route on a local instance and check whether any answer is 429.",
+      "deployment": "Repeat the burst against the deployed URL and check the platform's rate-limit settings."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/open-redirect:app/api/auth/callback/route.ts:GET+20handler",
+    "title": "Redirect target comes from the request",
+    "description": "A crafted link such as /login?next=https://evil.example sends a user who just authenticated to an attacker-controlled page that looks like yours. Prefixing the origin does not help on its own: \"https://app.example\" + \"@evil.example\" or \"//evil.example\" still changes the destination. saas-audit rates this medium; that is its own static rating, not a demonstrated impact. Suggested change: Only accept relative paths: check value.startsWith(\"/\") && !value.startsWith(\"//\") && !value.includes(\"\\\\\"), or map a short key to a fixed list of destinations, and fall back to \"/\" otherwise.",
+    "claimed_root_cause": "A redirect target comes from the request and is not validated before the redirect.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/auth/callback/route.ts",
+        "line": 4,
+        "scope": "GET handler",
+        "description": "GET handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/auth/callback/route.ts",
+        "line": 13,
+        "scope": "GET handler",
+        "description": "The redirect with a request-controlled target is here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/auth/callback/route.ts",
+        "line": 13,
+        "description": "Source line: return NextResponse.redirect(`${origin}${next}`);"
+      },
+      {
+        "file": "app/api/auth/callback/route.ts",
+        "line": 4,
+        "description": "Source line: export async function GET(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Validation in an imported helper, or an allow-list applied elsewhere, is not followed."
+    ],
+    "validation_plan": {
+      "local": "Request the route with the redirect parameter set to an absolute URL on another host, and to a protocol-relative URL: a Location header that points there confirms it."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/secret-committed-env:.env.local:.env.local",
+    "title": ".env.local is not ignored by git (the project has no .gitignore)",
+    "description": "Environment files hold credentials. The next \"git add .\" will commit it. It currently holds only empty or placeholder secret values. saas-audit rates this medium; that is its own static rating, not a demonstrated impact. Suggested change: Add \".env*\" (and \"!.env.example\") to .gitignore before the first commit that includes .env.local.",
+    "claimed_root_cause": "An environment file is tracked by git, or not covered by .gitignore, so credentials in it are committed or will be.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": ".env.local",
+        "line": 1,
+        "scope": ".env.local",
+        "description": "The environment file is here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": ".env.local",
+        "line": 1,
+        "description": "Source line: NEXT_PUBLIC_SUPABASE_URL=…"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "The git index and the .gitignore files were parsed without running git; history was not searched.",
+      "Whether the file holds live credentials was not tested."
+    ],
+    "validation_plan": {
+      "local": "In the real clone, run git ls-files and git check-ignore -v on the file, and git log --all -- on its path to see whether it was ever committed."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/secret-in-client:.env.local:NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY",
+    "title": "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY publishes a secret to the browser",
+    "description": "Next.js inlines every NEXT_PUBLIC_ variable into the client bundle at build time (env file). A name containing a secret marker means the value is readable by every visitor. saas-audit rates this critical; that is its own static rating, not a demonstrated impact. Suggested change: Rename the variable without the NEXT_PUBLIC_ prefix, read it only in route handlers or server components, and rotate the key because it has already been exposed.",
+    "claimed_root_cause": "A server secret is read in client-side code, or a NEXT_PUBLIC_ variable that names a secret is published in the browser bundle.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": ".env.local",
+        "line": 3,
+        "scope": "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY",
+        "description": "The secret is referenced here in code or configuration that is bundled for the browser"
+      }
+    ],
+    "evidence": [
+      {
+        "file": ".env.local",
+        "line": 3,
+        "description": "Source line: NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY=…"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Whether the value is a real secret, and which environment variables the production build sees, is not in the repository."
+    ],
+    "validation_plan": {
+      "local": "Build the app with a distinctive placeholder value for the variable in a local env file, then search the build output (.next/static) for that placeholder: a hit means the value reaches the browser.",
+      "deployment": "Load the deployed site, search the downloaded scripts for the variable name or the value prefix, and rotate the secret if it is there."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/secret-in-client:app/dashboard/page.tsx:SUPABASE_SERVICE_ROLE_KEY",
+    "title": "Client component reads server secret SUPABASE_SERVICE_ROLE_KEY",
+    "description": "This file starts with \"use client\", so it is bundled for the browser. Non-public environment variables are not available there; code that needs SUPABASE_SERVICE_ROLE_KEY in the browser is either broken or one rename away from publishing it as NEXT_PUBLIC_. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Move the call that needs the secret into a route handler, server action or server component and call that from the client component.",
+    "claimed_root_cause": "A server secret is read in client-side code, or a NEXT_PUBLIC_ variable that names a secret is published in the browser bundle.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/dashboard/page.tsx",
+        "line": 1,
+        "scope": "SUPABASE_SERVICE_ROLE_KEY",
+        "description": "The file starts with \"use client\", so it is bundled for the browser"
+      },
+      {
+        "kind": "sink",
+        "file": "app/dashboard/page.tsx",
+        "line": 14,
+        "scope": "SUPABASE_SERVICE_ROLE_KEY",
+        "description": "The secret is referenced here in code or configuration that is bundled for the browser"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/dashboard/page.tsx",
+        "line": 14,
+        "description": "Source line: process.env.SUPABASE_SERVICE_ROLE_KEY!,"
+      },
+      {
+        "file": "app/dashboard/page.tsx",
+        "line": 1,
+        "description": "Source line: \"use client\";"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Whether the value is a real secret, and which environment variables the production build sees, is not in the repository."
+    ],
+    "validation_plan": {
+      "local": "Build the app with a distinctive placeholder value for the variable in a local env file, then search the build output (.next/static) for that placeholder: a hit means the value reaches the browser.",
+      "deployment": "Load the deployed site, search the downloaded scripts for the variable name or the value prefix, and rotate the secret if it is there."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/secret-in-client:lib/supabase.ts:NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY",
+    "title": "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY publishes a secret to the browser",
+    "description": "Next.js inlines every NEXT_PUBLIC_ variable into the client bundle at build time (source reference). A name containing a secret marker means the value is readable by every visitor. saas-audit rates this critical; that is its own static rating, not a demonstrated impact. Suggested change: Rename the variable without the NEXT_PUBLIC_ prefix, read it only in route handlers or server components, and rotate the key because it has already been exposed.",
+    "claimed_root_cause": "A server secret is read in client-side code, or a NEXT_PUBLIC_ variable that names a secret is published in the browser bundle.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "lib/supabase.ts",
+        "line": 6,
+        "scope": "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY",
+        "description": "The secret is referenced here in code or configuration that is bundled for the browser"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "lib/supabase.ts",
+        "line": 6,
+        "description": "Source line: process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY!,"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Whether the value is a real secret, and which environment variables the production build sees, is not in the repository."
+    ],
+    "validation_plan": {
+      "local": "Build the app with a distinctive placeholder value for the variable in a local env file, then search the build output (.next/static) for that placeholder: a hit means the value reaches the browser.",
+      "deployment": "Load the deployed site, search the downloaded scripts for the variable name or the value prefix, and rotate the secret if it is there."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/security-headers:next.config.mjs:No+20security+20headers+20are+20configured",
+    "title": "No security headers are configured",
+    "description": "No Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security or Referrer-Policy header is set in next.config or anywhere in the source. The hosting platform may add some; Next.js adds none by default. saas-audit rates this info; that is its own static rating, not a demonstrated impact. Suggested change: Return the headers from an async headers() function in next.config for source \"/(.*)\": X-Content-Type-Options nosniff, X-Frame-Options DENY, Referrer-Policy strict-origin-when-cross-origin, Strict-Transport-Security, and a Content-Security-Policy suited to the app.",
+    "claimed_root_cause": "No security headers are configured in the project, or one is weakened.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "next.config.mjs",
+        "line": 2,
+        "scope": "No security headers are configured",
+        "description": "next.config is where a headers() function would set the missing headers"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "next.config.mjs",
+        "line": 2,
+        "description": "Source line: const nextConfig = {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Headers added by the hosting platform, a CDN or a reverse proxy are not visible."
+    ],
+    "validation_plan": {
+      "local": "Start the app locally and read the response headers of a page (for example with curl -I).",
+      "deployment": "Read the response headers of the deployed URL, where the platform and CDN may add some."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/stripe-checkout-client-price:app/api/checkout/route.ts:POST+20handler+3a+20Amount+20or+20line+20items+20come+20from+20the+20request",
+    "title": "Amount or line items come from the request",
+    "description": "The client decides what it pays: a request with a smaller amount or a hand-written cart creates a valid payment for less. Anything the browser sends can be edited. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Accept only a plan or product key from the client, look the price up server-side (a map of allowed Stripe price ids or a database row), and build line_items from that.",
+    "claimed_root_cause": "The price, amount or line items of a Stripe Checkout Session or PaymentIntent come from the request, so the caller decides what it pays.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/checkout/route.ts",
+        "line": 6,
+        "scope": "POST handler: Amount or line items come from the request",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/checkout/route.ts",
+        "line": 16,
+        "scope": "POST handler: Amount or line items come from the request",
+        "description": "The amount, line items or price id are taken from the request here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/checkout/route.ts",
+        "line": 16,
+        "description": "Source line: unit_amount: amount,"
+      },
+      {
+        "file": "app/api/checkout/route.ts",
+        "line": 6,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Server-side validation in an imported helper, or a Stripe-side restriction on prices, is not followed."
+    ],
+    "validation_plan": {
+      "local": "In Stripe test mode, call the route with a smaller amount or a different price id than the app offers and compare the amount of the created session."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/stripe-customer-unchecked:app/api/checkout/route.ts:POST+20handler+3a+20Stripe+20checkout.sessions.create",
+    "title": "Stripe checkout.sessions.create uses an id from the request",
+    "description": "Nothing ties the id to the signed-in user, so a caller can pass another customer's id and open their billing portal, read or cancel their subscription, or refund their payment. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Resolve the customer from the authenticated user (a stripe_customer_id column looked up by session user id) and ignore any id in the request. If an id must be accepted, compare it to that stored value first.",
+    "claimed_root_cause": "A Stripe customer, subscription or payment id from the request is passed to Stripe without being tied to the signed-in user.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/checkout/route.ts",
+        "line": 6,
+        "scope": "POST handler: Stripe checkout.sessions.create",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/checkout/route.ts",
+        "line": 11,
+        "scope": "POST handler: Stripe checkout.sessions.create",
+        "description": "An id from the request is passed to Stripe here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/checkout/route.ts",
+        "line": 11,
+        "description": "Source line: customer: customerId,"
+      },
+      {
+        "file": "app/api/checkout/route.ts",
+        "line": 6,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "An ownership check in an imported helper, or one done before this function is called, is not followed."
+    ],
+    "validation_plan": {
+      "local": "In Stripe test mode, sign in as user A and call the route with user B's customer or subscription id: a response about B, or a portal session for B, confirms it."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/stripe-webhook-no-idempotency:app/api/stripe/webhook/route.ts:POST+20handler",
+    "title": "Webhook does not deduplicate events",
+    "description": "Stripe delivers events at least once and retries on any non-2xx answer, so the same event can arrive twice. Without a stored event.id, fulfilment code (credits, emails, plan changes) runs twice. saas-audit rates this medium; that is its own static rating, not a demonstrated impact. Suggested change: Insert event.id into a table with a unique constraint before doing the work (on conflict do nothing) and return 200 early when the row already existed. Do the insert and the work in one transaction.",
+    "claimed_root_cause": "A verified Stripe webhook handler never reads event.id, so a redelivered event runs its side effects twice.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "scope": "POST handler",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 10,
+        "scope": "POST handler",
+        "description": "The event is verified here and its id is never used to de-duplicate"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 10,
+        "description": "Source line: const event = stripe.webhooks.constructEvent("
+      },
+      {
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "A de-duplication step in an imported helper, a database constraint or a queue in front of the handler is not visible."
+    ],
+    "validation_plan": {
+      "local": "Deliver the same signed event twice to the local handler and check that the side effects (credits, emails, plan changes) happen once."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/stripe-webhook-parse-before-verify:app/api/stripe/webhook/route.ts:POST+20handler",
+    "title": "Request body is parsed before the signature is verified",
+    "description": "The signature covers the exact bytes Stripe sent. Parsing the body first and re-serialising it changes those bytes, so verification fails in production. The usual workaround, trusting the parsed body and dropping verification, removes the protection altogether. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Use \"const rawBody = await request.text()\" and pass rawBody to constructEvent; parse JSON only from the verified event.",
+    "claimed_root_cause": "A Stripe webhook handler parses or re-serialises the body before verifying the signature, which either breaks verification or means the verified bytes are not the ones used.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "scope": "POST handler",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 8,
+        "scope": "POST handler",
+        "description": "The body is parsed or re-serialised here before the signature is verified"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 8,
+        "description": "Source line: const body = await request.json();"
+      },
+      {
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Which bytes reach the verifier depends on framework body handling that was inferred from the code, not observed."
+    ],
+    "validation_plan": {
+      "local": "Send a correctly signed test event (Stripe CLI listen and trigger) to the local handler and check that it is accepted; then send the same payload re-serialised and check that it is rejected."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/stripe-webhook-unknown-event-error:app/api/stripe/webhook/route.ts:POST+20handler+20default+20branch",
+    "title": "Unhandled event types make the handler fail (returns 500)",
+    "description": "Stripe sends every event type the endpoint is subscribed to. A non-2xx answer for an event you simply do not handle is retried for days and, after repeated failures, the endpoint is disabled, which then also drops the events you do care about. saas-audit rates this low; that is its own static rating, not a demonstrated impact. Suggested change: Return 200 for unhandled types (log them) and reserve error statuses for events you tried to process and failed. Subscribe the endpoint only to the events you handle.",
+    "claimed_root_cause": "A Stripe webhook handler answers event types it does not handle with an error status or an exception, so Stripe retries and can disable the endpoint.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "scope": "POST handler default branch",
+        "description": "POST handler is reachable by anyone who can send a request to its URL"
+      },
+      {
+        "kind": "sink",
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 34,
+        "scope": "POST handler default branch",
+        "description": "The branch for unhandled event types fails here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 34,
+        "description": "Source line: return NextResponse.json({ error: `Unhandled event ${event.type}` }, { status: 500 });"
+      },
+      {
+        "file": "app/api/stripe/webhook/route.ts",
+        "line": 7,
+        "description": "Source line: export async function POST(request: Request) {"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Which event types the endpoint is subscribed to is configured in the Stripe dashboard, not in the repository."
+    ],
+    "validation_plan": {
+      "local": "Send a signed event of a type the handler does not handle and check that the response is 2xx.",
+      "deployment": "List the events the endpoint is subscribed to in the Stripe dashboard."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/supabase-policy-missing:supabase/migrations/0001_init.sql:public.notes",
+    "title": "Table public.notes has row level security but no policies",
+    "description": "With RLS on and no policy, anon and authenticated clients are denied every operation. Either the table is only used through the service role, or the app is broken and the quick fix will be to switch RLS off or add a policy with USING (true). saas-audit rates this medium; that is its own static rating, not a demonstrated impact. Suggested change: Add one policy per operation the app needs, scoped with auth.uid(). If only server code touches the table, document that and suppress this finding.",
+    "claimed_root_cause": "Row level security is enabled on a table that has no policy for client roles, so every client request is denied.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 17,
+        "scope": "public.notes",
+        "description": "The table is created here and has row level security but no policy for client roles"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 17,
+        "description": "Source line: create table public.notes ("
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Whether the table is meant to be reached only through the service role, or the application is broken, depends on code and settings outside the migrations."
+    ],
+    "validation_plan": {
+      "local": "Run proof-audit against the migrations: it applies them to a throwaway PostgreSQL and probes the table as the anon role and as signed-in users. Denied reads and writes confirm the table is closed to clients; then check whether application code reads it with a user token.",
+      "deployment": "On the deployed project, list the policies of the table with pg_policies."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/supabase-policy-permissive:supabase/migrations/0002_policies.sql:public.feedback:anyone+20can+20send+20feedback",
+    "title": "Policy \"anyone can send feedback\" lets anon insert every row of feedback",
+    "description": "WITH CHECK (true) is always true, so row level security does not restrict inserts on feedback for anon. The anon key ships in every browser bundle, so anyone on the internet can use it. saas-audit rates this critical; that is its own static rating, not a demonstrated impact. Suggested change: Replace the constant with a condition tied to the caller, for example auth.uid() = <owner column>, or drop the policy and add a narrower one.",
+    "claimed_root_cause": "A row level security policy is always true, or lets the anon role write, so it does not restrict who can read or change rows.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 31,
+        "scope": "public.feedback / anyone can send feedback",
+        "description": "public.feedback is created here; tables in the public schema are served by the REST API"
+      },
+      {
+        "kind": "sink",
+        "file": "supabase/migrations/0002_policies.sql",
+        "line": 22,
+        "scope": "public.feedback / anyone can send feedback",
+        "description": "The policy is defined here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "supabase/migrations/0002_policies.sql",
+        "line": 22,
+        "description": "Source line: create policy \"anyone can send feedback\" on public.feedback"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "The policy expression was folded to a constant from its SQL text; no database evaluated it.",
+      "Grants, role membership and the other policies on the table were not combined by a database."
+    ],
+    "validation_plan": {
+      "local": "Run proof-audit against the migrations: it applies them to a throwaway PostgreSQL and probes the table as the anon role and as signed-in users. A cross-user or anonymous read or write that succeeds confirms it.",
+      "deployment": "On the deployed project, read the policy from pg_policies and repeat the anon and cross-user requests through the REST API."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/supabase-policy-permissive:supabase/migrations/0002_policies.sql:public.profiles:profiles+20readable",
+    "title": "Policy \"profiles readable\" lets every role including anon read every row of profiles",
+    "description": "USING (true) is always true. profiles has an owner column, so this exposes every user's rows. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Scope the policy to the caller (auth.uid() = owner column). If the table is public on purpose, keep the policy and add a saas-audit-ignore-next-line comment with the reason.",
+    "claimed_root_cause": "A row level security policy is always true, or lets the anon role write, so it does not restrict who can read or change rows.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 3,
+        "scope": "public.profiles / profiles readable",
+        "description": "public.profiles is created here; tables in the public schema are served by the REST API"
+      },
+      {
+        "kind": "sink",
+        "file": "supabase/migrations/0002_policies.sql",
+        "line": 9,
+        "scope": "public.profiles / profiles readable",
+        "description": "The policy is defined here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "supabase/migrations/0002_policies.sql",
+        "line": 9,
+        "description": "Source line: create policy \"profiles readable\" on public.profiles"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "The policy expression was folded to a constant from its SQL text; no database evaluated it.",
+      "Grants, role membership and the other policies on the table were not combined by a database."
+    ],
+    "validation_plan": {
+      "local": "Run proof-audit against the migrations: it applies them to a throwaway PostgreSQL and probes the table as the anon role and as signed-in users. A cross-user or anonymous read or write that succeeds confirms it.",
+      "deployment": "On the deployed project, read the policy from pg_policies and repeat the anon and cross-user requests through the REST API."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/supabase-policy-permissive:supabase/migrations/0002_policies.sql:public.projects:projects+20all",
+    "title": "Policy \"projects all\" lets authenticated read and write every row of projects",
+    "description": "USING (true) is always true, so row level security does not restrict reads or writes on projects for authenticated. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Replace the constant with a condition tied to the caller, for example auth.uid() = user_id, or drop the policy and add a narrower one.",
+    "claimed_root_cause": "A row level security policy is always true, or lets the anon role write, so it does not restrict who can read or change rows.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 10,
+        "scope": "public.projects / projects all",
+        "description": "public.projects is created here; tables in the public schema are served by the REST API"
+      },
+      {
+        "kind": "sink",
+        "file": "supabase/migrations/0002_policies.sql",
+        "line": 17,
+        "scope": "public.projects / projects all",
+        "description": "The policy is defined here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "supabase/migrations/0002_policies.sql",
+        "line": 17,
+        "description": "Source line: create policy \"projects all\" on public.projects"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "The policy expression was folded to a constant from its SQL text; no database evaluated it.",
+      "Grants, role membership and the other policies on the table were not combined by a database."
+    ],
+    "validation_plan": {
+      "local": "Run proof-audit against the migrations: it applies them to a throwaway PostgreSQL and probes the table as the anon role and as signed-in users. A cross-user or anonymous read or write that succeeds confirms it.",
+      "deployment": "On the deployed project, read the policy from pg_policies and repeat the anon and cross-user requests through the REST API."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/supabase-rls-missing:supabase/migrations/0001_init.sql:public.invoices",
+    "title": "Table public.invoices has no row level security",
+    "description": "Tables in the public schema are exposed through the REST API to anyone with the anon key. Without ENABLE ROW LEVEL SECURITY every row can be read (invoices has user_id, so these are per-user rows) and, with the default grants, written. saas-audit rates this critical; that is its own static rating, not a demonstrated impact. Suggested change: Add \"alter table public.invoices enable row level security;\" in a migration, then add policies for each operation the app needs.",
+    "claimed_root_cause": "A table in the public schema is created without ENABLE ROW LEVEL SECURITY, so the REST API serves its rows to the anon role.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 24,
+        "scope": "public.invoices",
+        "description": "The table is created here with no ENABLE ROW LEVEL SECURITY statement for it in the migrations"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 24,
+        "description": "Source line: create table public.invoices ("
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Only the migration files were read: tables and policies changed in the Supabase dashboard, and migrations that were never applied, are not reflected."
+    ],
+    "validation_plan": {
+      "local": "Run proof-audit against the migrations: it applies them to a throwaway PostgreSQL and probes the table as the anon role and as signed-in users. A read and a write as anon that return rows or succeed confirm it.",
+      "deployment": "On the deployed project, select relrowsecurity from pg_class for the table, and request the table through the REST API with the anon key."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/supabase-tenant-unscoped:supabase/migrations/0001_init.sql:public.projects",
+    "title": "No policy on projects ties user_id to the caller",
+    "description": "projects has user_id to identify who owns a row, but none of its 1 policy compares it with auth.uid() or passes it to a membership function. Any user the policies admit can reach every other user's or tenant's rows. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Add the owner column to the USING and WITH CHECK expressions, for example using (auth.uid() = user_id) with check (auth.uid() = user_id).",
+    "claimed_root_cause": "A table has an owner or tenant column that none of its policies ties to the caller, so users the policies admit can reach each other's rows.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 10,
+        "scope": "public.projects",
+        "description": "The table is created here and no policy compares its owner column with the caller"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "supabase/migrations/0001_init.sql",
+        "line": 10,
+        "description": "Source line: create table public.projects ("
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Policy expressions are matched to the owner column by their SQL text; no database evaluated them as two different users."
+    ],
+    "validation_plan": {
+      "local": "Run proof-audit against the migrations: it applies them to a throwaway PostgreSQL and probes the table as the anon role and as signed-in users. Create rows for two users and read and change user B's rows as user A: success confirms it.",
+      "deployment": "On the deployed project, repeat the two-user read and write through the REST API with two real sessions."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "saas-audit/unsafe-html:components/Comment.tsx:dangerouslySetInnerHTML+20receives+20non-constant+20input",
+    "title": "dangerouslySetInnerHTML receives non-constant input",
+    "description": "Anything that reaches this sink is parsed as HTML in the visitor's browser. If any part of it comes from a user, a database row or a third-party API, that is stored or reflected cross-site scripting, and an XSS bug can read the session and call every API as the user. saas-audit rates this high; that is its own static rating, not a demonstrated impact. Suggested change: Render the value as text (JSX escapes it). If HTML is required, sanitize it on the server with an allow-list sanitizer first and pass the result, or render Markdown with raw HTML disabled.",
+    "claimed_root_cause": "Non-constant input reaches an HTML sink (dangerouslySetInnerHTML, innerHTML, insertAdjacentHTML, document.write) without a recognised sanitizer.",
+    "trace": [
+      {
+        "kind": "sink",
+        "file": "components/Comment.tsx",
+        "line": 2,
+        "scope": "dangerouslySetInnerHTML receives non-constant input",
+        "description": "The HTML sink is here"
+      }
+    ],
+    "evidence": [
+      {
+        "file": "components/Comment.tsx",
+        "line": 2,
+        "description": "Source line: return <div className=\"comment\" dangerouslySetInnerHTML={{ __html: html }} />;"
+      }
+    ],
+    "blockers": [
+      "Static analysis only: saas-audit read the source files and ran nothing, so no request, query or execution has shown this behaviour.",
+      "Whether a user can control the value was not traced across files; it may be trusted content.",
+      "A sanitizer under a name the tool does not recognise is not followed."
+    ],
+    "validation_plan": {
+      "local": "Render the component in a browser or a jsdom test with a harmless marker payload such as an image tag with an onerror handler that sets a flag: the flag being set confirms it."
+    }
+  }
+]

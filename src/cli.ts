@@ -7,6 +7,7 @@ import { RULES } from "./catalog.js";
 import { CONFIG_FILE, ConfigError, DEFAULT_CONFIG, MAX_CONFIG_BYTES, parseConfig } from "./config.js";
 import { collectProject, readRegularFile } from "./project.js";
 import { filterMinSeverity, projectName } from "./report/common.js";
+import { exportFindings, omissionLines } from "./report/findings.js";
 import { renderHuman } from "./report/human.js";
 import { renderJson } from "./report/json.js";
 import { renderMarkdown } from "./report/markdown.js";
@@ -29,6 +30,7 @@ network, no code execution.
 Options:
   --json                  print a JSON report
   --markdown              print a Markdown report (client deliverable format)
+  --findings              print findings.json records (Cloudflare security-audit-skill shape, see docs/findings-export.md)
   -o, --output <file>     write the report to a file instead of stdout
   --config <file>         config file (default: <dir>/${CONFIG_FILE})
   --min-severity <level>  hide findings below critical|high|medium|low|info
@@ -49,6 +51,7 @@ interface Args {
   dir: string;
   json: boolean;
   markdown: boolean;
+  findings: boolean;
   output: string | null;
   config: string | null;
   minSeverity: Severity | null;
@@ -70,7 +73,7 @@ function isSeverity(value: string): value is Severity {
 }
 
 function parseArgs(argv: readonly string[]): Args {
-  const args: Args = { dir: ".", json: false, markdown: false, output: null, config: null, minSeverity: null, failOn: "low", date: null, color: null, allowIncomplete: false, listRules: false, help: false, version: false };
+  const args: Args = { dir: ".", json: false, markdown: false, findings: false, output: null, config: null, minSeverity: null, failOn: "low", date: null, color: null, allowIncomplete: false, listRules: false, help: false, version: false };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -85,6 +88,9 @@ function parseArgs(argv: readonly string[]): Args {
         break;
       case "--markdown":
         args.markdown = true;
+        break;
+      case "--findings":
+        args.findings = true;
         break;
       case "-o":
       case "--output":
@@ -136,7 +142,7 @@ function parseArgs(argv: readonly string[]): Args {
   }
   if (positional.length > 1) throw new UsageError("only one directory can be audited at a time");
   if (positional[0]) args.dir = positional[0];
-  if (args.json && args.markdown) throw new UsageError("--json and --markdown cannot be combined");
+  if (Number(args.json) + Number(args.markdown) + Number(args.findings) > 1) throw new UsageError("--json, --markdown and --findings cannot be combined");
   return args;
 }
 
@@ -218,7 +224,12 @@ function execute(argv: readonly string[], io: Io): number {
   let text: string;
   if (args.json) text = renderJson(shown, { name, version: TOOL_VERSION });
   else if (args.markdown) text = renderMarkdown(shown, { name, version: TOOL_VERSION, ...(args.date ? { date: args.date } : {}) });
-  else text = renderHuman(shown, { name, version: TOOL_VERSION, color: args.color ?? io.color });
+  else if (args.findings) {
+    const min = args.minSeverity;
+    const exported = exportFindings(min ? { ...shown, suppressed: shown.suppressed.filter((f) => SEVERITY_RANK[f.severity] >= SEVERITY_RANK[min]) } : shown);
+    for (const line of omissionLines(exported.omitted)) io.stderr(`${terminalText(line)}\n`);
+    text = exported.text;
+  } else text = renderHuman(shown, { name, version: TOOL_VERSION, color: args.color ?? io.color });
 
   if (args.output) {
     writeFileSync(resolve(io.cwd, args.output), text);
